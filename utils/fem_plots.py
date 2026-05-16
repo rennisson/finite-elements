@@ -1,4 +1,5 @@
 from basix.ufl import _ElementBase
+from datetime import datetime
 from numpy.typing import NDArray
 from pathlib import Path
 
@@ -19,13 +20,16 @@ def plot_basis_functions(element: _ElementBase, lattice: NDArray, basis_function
     print("Triangle nodes:")
     for j, node in enumerate(nodes):
         print(f"Node {j}: ({node[0]}, {node[1]})")
+
     fig = plt.figure(figsize=(12, 10))
 
     x_tri = lattice[:, 0]
     y_tri = lattice[:, 1]
 
     for i in range(num_basis_functions):
-        ax = fig.add_subplot(1, num_basis_functions, i+1, projection='3d')
+        nrows = element.degree
+        ncols = int(num_basis_functions / element.degree)
+        ax = fig.add_subplot(nrows, ncols, i+1, projection='3d')
 
         # Creates triangulation
         triangulation = mtri.Triangulation(x_tri, y_tri)
@@ -65,5 +69,6 @@ def plot_basis_functions(element: _ElementBase, lattice: NDArray, basis_function
         ax.set_zlabel('phi(x,y)', fontsize=10)
         ax.set_title(f'Basis function phi_{i}', fontsize=12, fontweight='bold')
 
-    plt.savefig(images_folder / "basis_functions_triangle_lagrange_1d_polynomial.png", dpi=150, bbox_inches='tight')
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    plt.savefig(images_folder / f"simulacao_{timestamp}", dpi=150, bbox_inches='tight')
     plt.show()

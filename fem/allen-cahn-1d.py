@@ -138,24 +138,17 @@ for msh_size in mesh_size:
         print("-> Arquivo 'eval_solution_mat.json' não encontrado. Pulando cálculo de erro.")
 
 
-    # ============================================================
-    # PLOTAGEM COM MATPLOTLIB
-    # ============================================================
+    # Plot
     print("\nGerando gráficos comparativos...")
-    
-    # Coordenadas x da malha
-    x_coords = msh.geometry.x[:, 0]
-    
+        
     # Criar diretório de saída se não existir
     Path("out_poisson").mkdir(exist_ok=True)
-    
-    # Preparar dados: Transpor matriz para o formato (Espaço, Tempo)
-    # O array original u_solutions tem formato (tempo, espaço)
+
     plot_data = np.array(u_solutions).T 
 
     # Criar a figura com 2 gráficos lado a lado
     fig, axes = plt.subplots(1, 3, figsize=(18, 7))
-    
+
     # ------------------------------------------------------------
     # GRÁFICO 1: O "Erro" do Artigo (Visualmente Invertido)
     # ------------------------------------------------------------
@@ -165,16 +158,20 @@ for msh_size in mesh_size:
         aspect='auto', 
         cmap='viridis', 
         extent=[0, T, 0, 1],
-        origin='upper'
+        origin='lower'
     )
     axes[0].set_xlabel('Time', fontsize=12, fontweight='bold')
     axes[0].set_ylabel('Space', fontsize=12, fontweight='bold')
-    axes[0].set_title('GT Solution', fontsize=13, fontweight='bold')
+    axes[0].set_title('"Inverted" GT Solution', fontsize=13, fontweight='bold')
     fig.colorbar(im1, ax=axes[0], label='u(x,t)')
 
     # ------------------------------------------------------------
     # GRÁFICO 2: Mapeamento Matemático Correto (Seu estilo original)
     # ------------------------------------------------------------
+
+    # Coordenadas x da malha
+    x_coords = msh.geometry.x[:, 0]
+    
     # O contourf plota os dados respeitando os grids Cartesianos.
     time_grid, space_grid = np.meshgrid(times, x_coords)
     contourf_plot = axes[1].contourf(time_grid, space_grid, plot_data, levels=50, cmap='viridis')
@@ -193,9 +190,11 @@ for msh_size in mesh_size:
     fig.colorbar(im2, ax=axes[2], label='|Erro|')
 
     plt.tight_layout()
-    
-    # Salvar e fechar
-    filepath = f"out_poisson/allen_cahn_comparacao_{msh_size}.png"
+
+    # Save fig
+    folder_path = Path(__file__).parent.parent / "out_poisson"
+    folder_path.mkdir(parents=True, exist_ok=True)
+    filepath = folder_path / f"allen_cahn_comparacao_{msh_size}.png"
     plt.savefig(filepath, dpi=150, bbox_inches='tight')
     print(f"Gráfico comparativo salvo em '{filepath}'")
     plt.close()

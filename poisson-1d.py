@@ -1,12 +1,12 @@
-from pathlib import Path
+from dolfinx import fem, mesh
+from dolfinx.fem.petsc import LinearProblem
 from mpi4py import MPI
+from pathlib import Path
 from petsc4py.PETSc import ScalarType  # type: ignore
+
+import matplotlib.pyplot as plt
 import numpy as np
 import ufl
-from dolfinx import fem, io, mesh, plot
-from dolfinx.fem.petsc import LinearProblem
-import matplotlib.pyplot as plt
-from matplotlib.tri import Triangulation
 
 
 def f(x):
@@ -89,7 +89,7 @@ out_folder.mkdir(parents=True, exist_ok=True)
 # Plot
 fig, ax = plt.subplots(1, 1, figsize=(6, 6))
 
-# Numerica solution 
+# Numerical solution 
 ax.plot(x_coords, u_values, 'b-o', linewidth=2, markersize=6, label='Numerical Solution (FEM)')
 # Analytical solution
 ax.plot(x_coords, u_exact(x_coords), 'r--', linewidth=2, label='Analytical solution: u(x) = x*exp(-x^2)')

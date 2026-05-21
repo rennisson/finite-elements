@@ -1,37 +1,41 @@
 from dolfinx import fem, mesh
 from dolfinx.fem.petsc import LinearProblem
 from mpi4py import MPI
-from matplotlib.tri import Triangulation
-from mpl_toolkits.mplot3d import Axes3D
 from pathlib import Path
 from petsc4py.PETSc import ScalarType  # type: ignore
 import matplotlib.pyplot as plt
 import numpy as np
+import time
 import ufl
 
 PI  = ufl.pi
 sin = ufl.sin
+N = 10 # Mesh size
 
 def f(x):
     """Define a função $(4x^3 - 6x)e^{-x^2}$."""
     return -3 * PI**2 * sin(PI * x[0]) * sin(PI * x[1]) * sin(PI * x[2])
 
 def u_exact(x):
-    return sin(PI * x[0]) * sin(PI * x[1]) * sin(PI * x[2])
+    x, y, z = x
+    return sin(PI * x) * sin(PI * y) * sin(PI * z)
 
-N = 90
+start = time.perf_counter()
 msh = mesh.create_box(
     comm=MPI.COMM_WORLD,
     points=((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)), 
     n=(N, N, N),
     cell_type=mesh.CellType.tetrahedron
 )
+end = time.perf_counter()
+print(f"Criação do mesh grid: {end - start:0.6f} segundos")
 
 V = fem.functionspace(msh, ("Lagrange", 1)) 
 v = ufl.TestFunction(V)
 u = ufl.TrialFunction(V)
 x = ufl.SpatialCoordinate(msh)
 
+start = time.perf_counter()
 # Dirichlet Boundary Condition
 facets = mesh.locate_entities_boundary(
     msh,
@@ -48,7 +52,11 @@ dofs_boundary = fem.locate_dofs_topological(
 bc = fem.dirichletbc(value=ScalarType(0), dofs=dofs_boundary, V=V)
 
 boundary_conditions = [bc]
+end = time.perf_counter()
+print(f"Definindo e aplicando condições de contorno: {end - start:0.6f} segundos")
 
+
+start = time.perf_counter()
 dx = ufl.Measure("cell", domain=msh)
 a  = ufl.inner(ufl.grad(u), ufl.grad(v)) * dx
 L  = ufl.inner(f(x), v) * dx
@@ -64,6 +72,9 @@ problem = LinearProblem(
 
 
 solution = problem.solve()
+
+end = time.perf_counter()
+print(f"Resolvendo o sistema: {end - start:0.6f} segundos")
 
 out_folder = Path("out_poisson")
 out_folder.mkdir(parents=True, exist_ok=True)

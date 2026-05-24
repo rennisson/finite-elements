@@ -10,7 +10,7 @@ import ufl
 
 PI  = ufl.pi
 sin = ufl.sin
-N = 10 # Mesh size
+N = 50 # Mesh size
 
 def f(x):
     """Define a função $(4x^3 - 6x)e^{-x^2}$."""
@@ -76,7 +76,7 @@ solution = problem.solve()
 end = time.perf_counter()
 print(f"Resolvendo o sistema: {end - start:0.6f} segundos")
 
-out_folder = Path("out_poisson")
+out_folder = Path("results")
 out_folder.mkdir(parents=True, exist_ok=True)
 
 # Extrair coordenadas e valores

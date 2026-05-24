@@ -101,7 +101,7 @@ problem = LinearProblem(
 
 solution = problem.solve()
 
-out_folder = Path("out_poisson")
+out_folder = Path("results")
 out_folder.mkdir(parents=True, exist_ok=True)
 
 x_coords = msh.geometry.x[:, 0]

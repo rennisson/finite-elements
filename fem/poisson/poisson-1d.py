@@ -83,7 +83,7 @@ x_coords = msh.geometry.x[:, 0]
 u_values = solution.x.array
  
 
-out_folder = Path("out_poisson")
+out_folder = Path("results")
 out_folder.mkdir(parents=True, exist_ok=True)
 
 # Plot

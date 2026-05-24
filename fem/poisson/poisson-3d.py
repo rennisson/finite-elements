@@ -1,16 +1,17 @@
+from plot import plot_graphs_3d
+
 from dolfinx import fem, mesh
 from dolfinx.fem.petsc import LinearProblem
 from mpi4py import MPI
-from pathlib import Path
 from petsc4py.PETSc import ScalarType  # type: ignore
-import matplotlib.pyplot as plt
+
 import numpy as np
 import time
 import ufl
 
 PI  = ufl.pi
 sin = ufl.sin
-N = 50 # Mesh size
+N = 30 # Mesh size
 
 def f(x):
     """Define a função $(4x^3 - 6x)e^{-x^2}$."""
@@ -76,50 +77,4 @@ solution = problem.solve()
 end = time.perf_counter()
 print(f"Resolvendo o sistema: {end - start:0.6f} segundos")
 
-out_folder = Path("results")
-out_folder.mkdir(parents=True, exist_ok=True)
-
-# Extrair coordenadas e valores
-x_coords = msh.geometry.x[:, 0]
-y_coords = msh.geometry.x[:, 1]
-z_coords = msh.geometry.x[:, 2]
-
-u_values = solution.x.array.real
-u_exact_values = np.array([u_exact(msh.geometry.x[i]) for i in range(len(msh.geometry.x))])
-
-# Calcular min e max global
-vmin = min(u_values.min(), u_exact_values.min())
-vmax = max(u_values.max(), u_exact_values.max())
-
-# Fatias em z = 0.5
-tolerance = 0.05
-mask_z = np.isclose(z_coords, 0.5, atol=tolerance)
-
-x_slice = x_coords[mask_z]
-y_slice = y_coords[mask_z]
-u_slice = u_values[mask_z]
-u_exact_slice = u_exact_values[mask_z]
-
-# Plot 2D das fatias
-fig, ax = plt.subplots(1, 2, figsize=(14, 6))
-
-# Solução numérica
-scatter1 = ax[0].scatter(x_slice, y_slice, c=u_slice, cmap='viridis', s=50, vmin=vmin, vmax=vmax)
-ax[0].set_xlabel('x')
-ax[0].set_ylabel('y')
-ax[0].set_title(f'Numerical solution (z=0.5) {N=}')
-ax[0].set_aspect('equal')
-
-# Solução analítica
-scatter2 = ax[1].scatter(x_slice, y_slice, c=u_exact_slice, cmap='viridis', s=50, vmin=vmin, vmax=vmax)
-ax[1].set_xlabel('x')
-ax[1].set_ylabel('y')
-ax[1].set_title('Analytical solution (z=0.5)')
-ax[1].set_aspect('equal')
-
-# Colorbar
-cbar = plt.colorbar(scatter2, ax=ax, label='u(x, y, 0.5)', shrink=0.8)
-plt.savefig(out_folder / f"poisson_3d_solution_slice_{N}points.png", dpi=150)
-plt.close()
-
-print(f"Erro máximo na fatia z=0.5: {np.max(np.abs(u_slice - u_exact_slice)):.2e}")
+plot_graphs_3d(mesh_domain=msh, u_exact=u_exact, solution=solution)

@@ -1,3 +1,5 @@
+from plot import plot_graphs_1d
+
 from dolfinx import fem, mesh
 from dolfinx.fem.petsc import LinearProblem
 from mpi4py import MPI
@@ -13,6 +15,9 @@ def f(x):
     """Define a função $(4x^3 - 6x)e^{-x^2}$."""
     return (4*x[0]**3 - 6*x[0]) * (ufl.exp(-x[0]**2))
 
+def u_exact(x):
+    return x * np.exp(-x**2)
+
 def initial_conditions(x):
     """Fronteira esquerda (ou condiçoes iniciais) do problema"""
     return np.isclose(x[0], 0.0)
@@ -20,9 +25,6 @@ def initial_conditions(x):
 def boundary_conditions(x):
     """Fronteira direita do problema""" 
     return np.isclose(x[0], 1.0)
-
-def u_exact(x):
-    return x * np.exp(-x**2)
 
 
 msh = mesh.create_unit_interval(comm=MPI.COMM_WORLD, nx=10)
@@ -79,26 +81,4 @@ problem = LinearProblem(
 
 solution = problem.solve()
 
-x_coords = msh.geometry.x[:, 0]
-u_values = solution.x.array
- 
-
-out_folder = Path("results")
-out_folder.mkdir(parents=True, exist_ok=True)
-
-# Plot
-fig, ax = plt.subplots(1, 1, figsize=(6, 6))
-
-# Numerical solution 
-ax.plot(x_coords, u_values, 'b-o', linewidth=2, markersize=6, label='Numerical Solution (FEM)')
-# Analytical solution
-ax.plot(x_coords, u_exact(x_coords), 'r--', linewidth=2, label='Analytical solution: u(x) = x*exp(-x^2)')
-
-ax.set_xlim(-0.05, 1.05)
-ax.set_ylim(-0.05, 1.05)
-ax.set_aspect('equal')
-ax.legend(fontsize=11)
-plt.tight_layout()
-plt.savefig(out_folder / "poisson_1d_solution.png", dpi=150)
-plt.close()
-
+plot_graphs_1d(mesh_domain=msh, u_exact=u_exact, solution=solution)

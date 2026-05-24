@@ -9,7 +9,7 @@ def plot_graphs(
         mesh_sizes, times_list, l2_errors_list, solve_times, 
         u_solutions_list, x_coords_list, f_interp_gt
     ) -> None:
-    
+
     print("\nGerando gráficos combinados...")
         
     # Criar diretório de saída
@@ -32,11 +32,11 @@ def plot_graphs(
             
             ax1.plot(
                 final_errors[i], solve_times[i], marker='o', markersize=10,
-                color='#FF6B6B', markeredgecolor='black', markeredgewidth=1.2, 
+                color=colors[i], markeredgecolor='black', markeredgewidth=1.2, 
                 label=f'FEM (N={m_size})', linestyle='None'
             )
             
-        ax1.set_xlabel('Erro L² Relativo (Final)', fontsize=13, fontweight='bold')
+        ax1.set_xlabel('Erro L2 Relativo', fontsize=13, fontweight='bold')
         ax1.set_ylabel('Tempo de Solução (s)', fontsize=13, fontweight='bold')
         ax1.set_title('Allen-Cahn 1D: Tempo de Solução vs Erro L² Relativo', 
                      fontsize=14, fontweight='bold')
@@ -44,7 +44,6 @@ def plot_graphs(
         ax1.legend(fontsize=12, loc='best', framealpha=0.9)
         ax1.set_xscale('log')
         ax1.set_yscale('log')
-        ax1.invert_xaxis()  # Inverter eixo X (direita→esquerda)
         
         plt.tight_layout()
         filepath_solve = Path(folder) / "l2_error_vs_solve_time_combined.png"
@@ -62,7 +61,7 @@ def plot_graphs(
         ax2.plot(
             times_list[i], l2_errors_list[i],
             linestyle='--', linewidth=1.0,
-            marker='o', markevery=0.1, 
+            marker='o', markevery=0.05, 
             color=c, 
             label=f'FEM (Nx={m_size})'
         )

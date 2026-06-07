@@ -1,0 +1,166 @@
+# -*- coding: utf-8 -*-
+import numpy as np
+import matplotlib.pyplot as plt
+import time
+
+import jax
+import jax.numpy as jnp
+import optax
+
+from jax import random
+
+activation_function = jax.nn.tanh # defines tanh as activation function
+
+def u(x):
+    """Exact solution of the PDE"""
+    return x * jnp.exp(-x**2)
+
+def rhs(x):
+    """Defines the right hand side of the equation"""
+    return (4*x**3 - 6*x) * jnp.exp(-x**2)
+
+# Domain of x
+x_lower = 0
+x_upper = 1
+
+n  = 256
+key_x = jax.random.PRNGKey(136)
+key_y = jax.random.PRNGKey(871)
+
+X = jax.random.uniform(
+    key=key_x, shape=(n, 1),
+    minval=x_lower, maxval=x_upper
+)
+X_test = jnp.linspace(x_lower, x_upper, 1000).reshape((1000, 1))
+Y_test = X_test * jnp.exp(-X_test**2)
+
+# hyperparameters
+width = [1] + 1*[1] + [1]
+learning_rate = 1e-4
+b1 = 0.9
+b2 = 0.999
+eps = 1e-08
+eps_root = 0.0
+
+initializer = jax.nn.initializers.glorot_normal() # Glorot initialization
+key    = jax.random.split(jax.random.PRNGKey(136), len(width) - 1)
+params = list()
+
+for key, lin, lout in zip(key, width[:-1], width[1:]):
+    W = initializer(key, (lin, lout), jnp.float32)
+    B = initializer(key, (1, lout)  , jnp.float32)
+    params.append({'W': W, 'B': B})
+
+#Initilize optimizer
+optimizer = optax.adam(learning_rate, b1, b2, eps, eps_root)
+opt_state = optimizer.init(params)
+
+# Define function for forward pass
+@jax.jit #Just in time compilation
+def forward(x, params):
+    *hidden, output = params
+    for layer in hidden:
+        x = activation_function(x @ layer['W'] + layer['B'])
+
+    return x @ output['W'] + output['B']
+
+def laplacian(f, argnum=0):
+    """Defines laplacian using `jax.grad`"""
+    return jax.grad(jax.grad(f, argnums=argnum), argnums=argnum)
+
+def pde(u):
+    """Defines the PDE"""
+    uxx = lambda x: laplacian(f=lambda x: jnp.sum(u(x)), argnum=0)(x)
+    return uxx
+
+def MSE(pred, true):
+    """Mean squared error"""
+    return jnp.mean((pred - true) ** 2)
+
+def loss_interior(x, params):
+    """Find the loss in the domain of the function"""
+
+    def u_net(x_val):
+        """Calcula u(x) da rede neural"""
+        x = x_val.reshape(1, 1)
+        return forward(x, params)[0, 0]
+
+    # Vetorizamos a operação
+    laplacian_u = jax.vmap(pde(u_net))(x.flatten())
+
+    # Voltamos o resultado para o formato original (N, 1) para calcular o erro
+    u_xx = laplacian_u.reshape(-1, 1)
+    return MSE(u_xx, rhs(x))
+
+@jax.jit
+def loss_function(params, x):
+    pde_loss = loss_interior(x, params)
+
+    bc_0 = MSE(forward(jnp.array([[0.0]]), params), 0.0)
+    bc_1 = MSE(forward(jnp.array([[1.0]]), params), jnp.exp(-1.0))
+
+    boundary_loss = bc_0 + bc_1
+
+    return pde_loss + boundary_loss
+
+#Define the gradient function
+grad_loss = jax.jit(jax.grad(loss_function, 0))
+
+#Define update function
+@jax.jit
+def update(opt_state, params, x):
+    #Compute gradient
+    grads = grad_loss(params, x)
+    #Calculate parameters updates
+    updates, opt_state = optimizer.update(grads, opt_state)
+    #Update parameters
+    params = optax.apply_updates(params, updates)
+    #Return state of optmizer and updated parameters
+    return opt_state, params
+
+epochs = 15000
+t0 = time.time()
+for e in range(epochs):
+    # Update optimizer state and parameters
+    opt_state, params = update(opt_state, params, X)
+    if e % 1000 == 0:
+        elapsed_time = f"{time.time() - t0:.2f}s"
+        print(f"{elapsed_time:<6} | Epoch {e:<6}: empirical loss {loss_function(params, X):.12f}")
+
+elapsed_time = f"{time.time() - t0:.2f}s"
+print(f"{elapsed_time:<6} | Epoch {e:<6}: empirical loss {loss_function(params, X):12f}")
+
+Y_nn = forward(X_test.reshape((1000, 1)), params).reshape(X_test.shape)
+
+plt.plot(X_test, Y_test, '-', color='blue', markersize=0.5, label='Exact solution')
+plt.plot(X_test, Y_nn, '--', color='red', markersize=0.5, label=f'PINN {width}')
+
+plt.legend(loc='best')
+plt.show()
+
+print(f"Train loss {loss_function(params, X)}")
+print(f"Test loss {loss_function(params, X_test)}")
+
+# Cálculo do erro absoluto de forma vetorizada
+errors = jnp.abs(Y_test - Y_nn)
+
+# Cria uma figura com 1 linha e 2 colunas para os gráficos
+fig, ax = plt.subplots(1, 1, figsize=(7, 5))
+
+# Gráfico 2: Escala Logarítmica
+ax.plot(X_test, errors, '-', color='red')
+ax.set_title('Erro Absoluto (Escala Logarítmica)')
+ax.set_xlabel('x')
+ax.set_ylabel('u(x)')
+ax.set_yscale('log') # Transforma o eixo Y em escala logarítmica
+ax.grid(True, which="both", linestyle='--', alpha=0.7)
+
+# Ajusta o layout para evitar sobreposição e plota
+plt.tight_layout()
+plt.show()
+
+y_nn_salvar = np.asarray(Y_nn)
+np.savez_compressed(f'dados_pinn_{width}.npz', y_nn=y_nn_salvar)
+
+print("Dados salvos com sucesso no arquivo 'dados_pinn.npz'!")
+

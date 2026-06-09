@@ -5,7 +5,7 @@ import glob
 import os
 
 # 1. Carregar dados do FEM
-fem_file = "fem_results.json"
+fem_file = "npz/fem_results.json"
 if os.path.exists(fem_file):
     with open(fem_file, "r") as f:
         fem_data = json.load(f)
@@ -16,7 +16,7 @@ else:
     fem_err, fem_time = [], []
 
 # 2. Carregar e organizar dados das PINNs
-pinn_files = glob.glob("pinn_lbfgs_*.npz")
+pinn_files = glob.glob("npz/pinn_lbfgs_*.npz")
 
 # Dicionário para agrupar dados por largura (número de nós)
 # Formato: {largura: {'err': [], 'train_time': [], 'eval_time': []}}

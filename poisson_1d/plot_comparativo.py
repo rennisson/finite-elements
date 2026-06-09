@@ -6,7 +6,7 @@ import os
 
 # 1. Carregar dados do FEM
 # Assumindo que você criou um json similar para o caso 1D
-fem_file = "fem_results_1d.json" 
+fem_file = "npz/fem_results_1d.json" 
 if os.path.exists(fem_file):
     with open(fem_file, "r") as f:
         fem_data = json.load(f)

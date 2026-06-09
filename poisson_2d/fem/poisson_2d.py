@@ -1,4 +1,4 @@
-from plot import plot_graphs_2d
+from utils.fem_plots import plot_graphs_2d
 
 from dolfinx import fem, mesh
 from dolfinx.fem.petsc import LinearProblem
@@ -34,9 +34,10 @@ def x_one(x):
     """Fronteira direita do problema""" 
     return np.isclose(x[0], 1.0)
 
-N_list = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
+N_list = [100]
 
-resultados_fem = {"N": [], "rel_error": [], "solve_time": []}
+resultados_fem = {"N": [], "rel_error": [], "solve_time": [], "eval_time": []}
+
 for N in N_list:
 
     print(f"\n--- Resolvendo FEM para N = {N}x{N} ---")
@@ -128,14 +129,45 @@ for N in N_list:
 
     print(f"Tempo de Solução: {solve_time:.4f} s | Erro L2 Relativo: {rel_error:.6e}")
 
+    # # --- Cálculo do FEM Evaluation Time ---
+    # # O artigo cita avaliação em uma malha de 2000 x 2000 células.
+    # N_eval = 2000
+    # print(f"Avaliando (interpolando) na nova malha de {N_eval}x{N_eval}...")
+    
+    # msh_eval = mesh.create_rectangle(
+    #     comm=MPI.COMM_WORLD,
+    #     points=((0.0, 0.0), (1.0, 1.0)), 
+    #     n=(N_eval, N_eval),
+    #     cell_type=mesh.CellType.triangle
+    # )
+    # V_eval = fem.functionspace(msh_eval, ("Lagrange", 1))
+    # u_eval = fem.Function(V_eval)
+
+    # t0_eval = time.perf_counter()
+    # try:
+    #     # Transferência entre malhas não coincidentes (dolfinx >= 0.6.0)
+    #     nmm_data = fem.create_nonmatching_meshes_interpolation_data(
+    #         msh_eval._cpp_object,
+    #         V_eval.element,
+    #         msh._cpp_object
+    #     )
+    #     u_eval.interpolate(solution, nmm_interpolation_data=nmm_data)
+    # except Exception:
+    #     # Fallback para versões anteriores do dolfinx
+    #     u_eval.interpolate(solution)
+        
+    # eval_time = time.perf_counter() - t0_eval
+    # print(f"FEM Evaluation Time: {eval_time:0.4f} s")
+
     # Salvar resultados
     resultados_fem["N"].append(N)
     resultados_fem["rel_error"].append(rel_error)
     resultados_fem["solve_time"].append(solve_time)
+    # resultados_fem["eval_time"].append(eval_time)
 
-# Exportar resultados para o plot
-with open("fem_results.json", "w") as f_out:
-    json.dump(resultados_fem, f_out)
-print("\nResultados do FEM salvos em 'fem_results.json'!")
+# --- Exportar resultados para JSON ---
+with open("fem_results_2d.json", "w") as f_out:
+    json.dump(resultados_fem, f_out, indent=4)
+print("\nResultados do FEM 2D salvos em 'fem_results_2d.json'!")
 
-# plot_graphs_2d(mesh_domain=msh, u_exact=u_exact, solution=solution)
+plot_graphs_2d(mesh_domain=msh, u_exact=u_exact, solution=solution)

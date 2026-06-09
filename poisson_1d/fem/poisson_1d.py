@@ -6,7 +6,8 @@ from dolfinx.fem.petsc import LinearProblem
 from mpi4py import MPI
 from petsc4py.PETSc import ScalarType  # type: ignore
 from pathlib import Path
-from plot import plot_graphs_1d
+from utils.fem_plots import plot_graphs_1d
+
 
 def f(x):
     """Define a função (4x^3 - 6x)e^{-x^2}."""

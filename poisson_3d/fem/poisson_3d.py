@@ -1,4 +1,4 @@
-from plot import plot_graphs_3d
+from utils.fem_plots import plot_graphs_3d
 
 from dolfinx import fem, mesh
 from dolfinx.fem.petsc import LinearProblem
@@ -12,7 +12,7 @@ import ufl
 
 PI  = ufl.pi
 sin = ufl.sin
-N_list = [16, 32, 64]
+N_list = [16]
 
 def f(x):
     """Define a função."""
@@ -141,6 +141,4 @@ with open("fem_results_3d.json", "w") as f_out:
     json.dump(resultados_fem, f_out, indent=4) 
 print("\nResultados do FEM 3D salvos com sucesso em 'fem_results_3d.json'!")
 
-# Plota apenas o último N iterado para não sobrecarregar a visualização
-# Se sua função plot_graphs_3d esperar u_exact dependente do ufl, mantenha ambas ou adapte na plot
 plot_graphs_3d(mesh_domain=msh, u_exact=u_exact_np, solution=solution)

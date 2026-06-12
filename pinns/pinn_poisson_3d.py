@@ -7,8 +7,6 @@ Original file is located at
     https://colab.research.google.com/drive/1h3wrjq1Gi2iCeWizVs2pj1Nj4CVazo06
 """
 
-!pip install jaxopt
-
 import jax
 import jax.numpy as jnp
 import optax

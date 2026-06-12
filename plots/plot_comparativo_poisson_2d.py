@@ -19,7 +19,6 @@ else:
 pinn_files = glob.glob("npz/pinn_lbfgs_*.npz")
 
 # Dicionário para agrupar dados por largura (número de nós)
-# Formato: {largura: {'err': [], 'train_time': [], 'eval_time': []}}
 pinn_data_grouped = {}
 
 for file in pinn_files:
@@ -40,10 +39,10 @@ for file in pinn_files:
     pinn_data_grouped[width]['train_time'].append(train_t)
     pinn_data_grouped[width]['eval_time'].append(eval_t)
 
-# 3. Criar a Figura semelhante à do artigo
+# 3. Criar a Figura
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
 
-# Paleta de cores para as diferentes PINNs (semelhante ao artigo: verde, vermelho, roxo...)
+# Paleta de cores para as diferentes PINNs
 colors = ['#2ca02c', '#d62728', '#9467bd', '#ff7f0e', '#e377c2']
 
 # ---- Gráfico 4a: Tempo de Solução vs Erro Relativo ----
@@ -88,5 +87,5 @@ ax2.legend()
 
 plt.suptitle('Figure 4: Plot for 2D Poisson equation of time in sec versus $\ell^2$ relative error.', fontsize=14)
 plt.tight_layout()
-plt.savefig("results/fem_vs_pinn.png", dpi=150)
+plt.savefig("fem_vs_pinn.png", dpi=150)
 plt.show()

@@ -1,7 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from pathlib import Path
+
 from typing import Dict, Optional
+
 
 def solucao_exata(x: np.ndarray) -> np.ndarray:
     """Calcula a solução analítica exata da equação de Poisson 1D."""

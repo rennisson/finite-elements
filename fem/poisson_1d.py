@@ -9,7 +9,7 @@ from mpi4py import MPI
 from petsc4py.PETSc import ScalarType  # type: ignore
 from pathlib import Path
 
-from utils.fem_plots import plot_graphs_1d
+from fem_plots import plot_graphs_1d
 
 def f(x):
     """Define a função fonte (4x^3 - 6x)e^{-x^2}."""
@@ -105,7 +105,7 @@ def solve_poisson_1d(nx: int):
 
 
 def main():
-    output_dir = Path("npz_fem")
+    output_dir = Path("fem_poisson_1d")
     output_dir.mkdir(exist_ok=True)
     
     mesh_sizes = [64, 128, 256, 512, 1024, 2048, 4096]
@@ -130,7 +130,7 @@ def main():
         )
     
     # Exporta os resultados globais compilados
-    with open("fem_results_1d.json", "w") as f_out:
+    with open("fem_poisson_1d/fem_results_1d.json", "w") as f_out:
         json.dump(resultados_fem, f_out, indent=4)
         
     print("\nProcesso concluído! Métricas salvos em 'fem_results_1d.json' e dados geométricos na pasta 'npz_fem'.")

@@ -1,4 +1,4 @@
-from utils.fem_plots import plot_graphs_2d
+from fem_plots import plot_graphs_2d
 
 from dolfinx import fem, mesh
 from dolfinx.fem.petsc import LinearProblem
@@ -34,7 +34,7 @@ def x_one(x):
     """Fronteira direita do problema""" 
     return np.isclose(x[0], 1.0)
 
-N_list = [100]
+N_list = [10, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
 
 resultados_fem = {"N": [], "rel_error": [], "solve_time": [], "eval_time": []}
 
@@ -166,7 +166,7 @@ for N in N_list:
     # resultados_fem["eval_time"].append(eval_time)
 
 # --- Exportar resultados para JSON ---
-with open("fem_results_2d.json", "w") as f_out:
+with open("fem_poisson_2d/fem_results_2d.json", "w") as f_out:
     json.dump(resultados_fem, f_out, indent=4)
 print("\nResultados do FEM 2D salvos em 'fem_results_2d.json'!")
 

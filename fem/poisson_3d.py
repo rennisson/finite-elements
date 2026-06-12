@@ -1,4 +1,4 @@
-from utils.fem_plots import plot_graphs_3d
+from fem_plots import plot_graphs_3d
 
 from dolfinx import fem, mesh
 from dolfinx.fem.petsc import LinearProblem
@@ -12,7 +12,7 @@ import ufl
 
 PI  = ufl.pi
 sin = ufl.sin
-N_list = [16]
+N_list = [16, 32, 64]
 
 def f(x):
     """Define a função."""
@@ -21,6 +21,7 @@ def f(x):
 def u_exact_np(x):
     """Função exata usando NumPy para a interpolação (evita conflito com UFL)."""
     return np.sin(np.pi * x[0]) * np.sin(np.pi * x[1]) * np.sin(np.pi * x[2])
+
 
 resultados_fem = {"N": [], "rel_error": [], "solve_time": [], "eval_time": []}
 
@@ -136,8 +137,7 @@ for N in N_list:
     # resultados_fem["eval_time"].append(eval_time)
 
 # --- Exportar resultados para JSON ---
-with open("fem_results_3d.json", "w") as f_out:
-    # indent=4 deixa o arquivo estruturado e fácil de ler
+with open("fem_poisson_3d/fem_results_3d.json", "w") as f_out:
     json.dump(resultados_fem, f_out, indent=4) 
 print("\nResultados do FEM 3D salvos com sucesso em 'fem_results_3d.json'!")
 

@@ -143,23 +143,23 @@ xy_interior = rand_uniform(key_f, shape=(N_f, 2), minval=0.0, maxval=1.0)
 
 # Pontos na fronteira separados por face
 xy_x0 = jnp.column_stack([
-    jnp.zeros(boundary_points_partition),
-    rand_uniform(key_g, shape=(boundary_points_partition,))
+    jnp.zeros(N_g),
+    rand_uniform(key_g, shape=(N_g,))
 ])
 
 xy_x1 = jnp.column_stack([
-    jnp.ones(boundary_points_partition),
+    jnp.ones(N_g),
     rand_uniform(jax.random.fold_in(key_g, 1), shape=(N_g,))
 ])
 
 xy_y0 = jnp.column_stack([
     jax.random.uniform(jax.random.fold_in(key_g, 2), shape=(N_g,)),
-    jnp.zeros(boundary_points_partition)
+    jnp.zeros(N_g)
 ])
 
 xy_y1 = jnp.column_stack([
     jax.random.uniform(jax.random.fold_in(key_g, 3), shape=(N_g,)),
-    jnp.ones(boundary_points_partition)
+    jnp.ones(N_g)
 ])
 
 # Definir a função de gradiente

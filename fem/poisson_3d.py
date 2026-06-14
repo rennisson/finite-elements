@@ -12,7 +12,7 @@ import ufl
 
 PI  = ufl.pi
 sin = ufl.sin
-N_list = [16, 32, 64]
+N_list = [16, 32, 64, 128]
 
 def f(x):
     """Define a função."""
@@ -72,7 +72,15 @@ for N in N_list:
         L,
         bcs=boundary_conditions,
         petsc_options_prefix="demo_poisson_3d_",
-        petsc_options={"ksp_type": "preonly", "pc_type": "lu", "ksp_error_if_not_converged": True}
+        petsc_options={
+            "ksp_type": "cg",
+            "ksp_rtol": 1e-6,
+            "pc_type": "gamg",
+            "pc_gamg_type": "agg",
+            "pc_gamg_agg_nsmooths": 1,
+            "mg_levels_ksp_type": "chebyshev",
+            "mg_levels_pc_type": "jacobi"
+        }
     )
 
     # FEM Solving time

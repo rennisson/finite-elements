@@ -10,7 +10,6 @@ from mpi4py import MPI
 from petsc4py.PETSc import ScalarType  # type: ignore
 from pathlib import Path
 
-from fem_plots import plot_graphs_1d
 
 def f(x):
     """Define a função fonte (4x^3 - 6x)e^{-x^2}."""
@@ -24,13 +23,13 @@ def right_boundary(x):
     """Fronteira direita (condição de Dirichlet)""" 
     return np.isclose(x[0], 1.0)
 
-
-def solve_poisson_1d(nx: int, x_target: np.ndarray, y_target_exact: np.ndarray):
+def solve_poisson_1d(nx: int, x_target: np.ndarray, y_target_exact: np.ndarray, num_runs=10):
     """
     Resolve a equação de Poisson 1D usando FEniCSx e avalia a solução
-    nos pontos de destino (target) para calcular o erro L2 relativo.
+    nos pontos de destino. Realiza múltiplas execuções (num_runs) para
+    tirar a média do tempo de solução e de avaliação.
     """
-    print(f"\n--- Resolvendo para malha com nx = {nx} ---")
+    print(f"\n--- Resolvendo para malha com nx = {nx} (Média de {num_runs} execuções) ---")
     
     # 1. Criação da Malha e Espaço de Funções
     msh = mesh.create_unit_interval(comm=MPI.COMM_WORLD, nx=nx)
@@ -40,7 +39,7 @@ def solve_poisson_1d(nx: int, x_target: np.ndarray, y_target_exact: np.ndarray):
     u = ufl.TrialFunction(V)
     x = ufl.SpatialCoordinate(msh)
 
-    # 2. Condições de Contorno de Dirichlet
+    # 2. Condições de Contorno
     facets_left = mesh.locate_entities_boundary(msh, dim=0, marker=left_boundary)
     dofs_left = fem.locate_dofs_topological(V, entity_dim=0, entities=facets_left)
     bc_left = fem.dirichletbc(value=ScalarType(0), dofs=dofs_left, V=V)
@@ -56,25 +55,18 @@ def solve_poisson_1d(nx: int, x_target: np.ndarray, y_target_exact: np.ndarray):
     a = ufl.inner(ufl.grad(u), ufl.grad(v)) * dx
     L = ufl.inner(f(x), v) * dx
 
-    # 4. Solução do Sistema Linear (Medindo o Solve Time)
+    # Monta o problema linear (feito uma vez fora do loop de medição)
     problem = LinearProblem(
         -a, L, bcs=bcs,
         petsc_options_prefix="demo_poisson_1d_",
         petsc_options={"ksp_type": "cg", "pc_type": "ilu"}
     )
     
-    t0_solve = time.perf_counter()
-    solution = problem.solve()
-    solve_time = time.perf_counter() - t0_solve
-    
-    # 5. AVALIAÇÃO NOS 512 PONTOS DO GROUND TRUTH (Medindo o Eval Time)
+    # Pré-processamento geométrico (para a avaliação não enviesar o loop de tempo)
     num_points = x_target.shape[0]
     pontos_3d = np.zeros((num_points, 3))
-    pontos_3d[:, 0] = x_target.flatten() # O FEniCSx exige coordenadas [x, y, z]
+    pontos_3d[:, 0] = x_target.flatten()
 
-    t0_eval = time.perf_counter()
-    
-    # Encontrar quais células da malha contêm os pontos do Ground Truth
     bb_tree = geometry.bb_tree(msh, msh.topology.dim)
     cell_candidates = geometry.compute_collisions_points(bb_tree, pontos_3d)
     colliding_cells = geometry.compute_colliding_cells(msh, cell_candidates, pontos_3d)
@@ -89,38 +81,57 @@ def solve_poisson_1d(nx: int, x_target: np.ndarray, y_target_exact: np.ndarray):
             cells.append(colliding_cells.links(i)[0])
             exact_filtered.append(y_target_exact[i])
 
-    # Interpolação/Avaliação dos valores do FEM nesses pontos específicos
-    y_fem_eval = solution.eval(points_on_proc, cells).flatten()
+    # ==========================================
+    # 4. LOOP DE EXECUÇÃO E MEDIÇÃO
+    # ==========================================
+    total_solve_time = 0.0
+    total_eval_time = 0.0
     
-    eval_time = time.perf_counter() - t0_eval
+    # Opcionalmente, armazenaremos apenas a última solução para cálculo de erro
+    final_fem_eval = None
     
-    # 6. CÁLCULO DO ERRO L2 RELATIVO DISCRETO
+    for _ in range(num_runs):
+        # A. Medir Tempo de Solução
+        t0_solve = time.perf_counter()
+        solution = problem.solve()
+        t_solve = time.perf_counter() - t0_solve
+        total_solve_time += t_solve
+        
+        # B. Medir Tempo de Avaliação
+        t0_eval = time.perf_counter()
+        final_fem_eval = solution.eval(points_on_proc, cells).flatten()
+        t_eval = time.perf_counter() - t0_eval
+        total_eval_time += t_eval
+
+    # Médias dos tempos
+    avg_solve_time = total_solve_time / num_runs
+    avg_eval_time = total_eval_time / num_runs
+
+    # ==========================================
+    # 5. CÁLCULO DO ERRO L2 RELATIVO DISCRETO
+    # ==========================================
     y_exact_filtered = np.array(exact_filtered).flatten()
     
-    norma_erro = np.linalg.norm(y_fem_eval - y_exact_filtered)
+    norma_erro = np.linalg.norm(final_fem_eval - y_exact_filtered)
     norma_exata = np.linalg.norm(y_exact_filtered)
     rel_error = float(norma_erro / norma_exata)
     
-    print(f"Solving Time: {solve_time:.6f} s | Eval Time: {eval_time:.6f} s | Erro L2 Relativo: {rel_error:.6e}")
+    print(f"Avg Solving Time: {avg_solve_time:.6f} s | Avg Eval Time: {avg_eval_time:.6f} s | Erro L2: {rel_error:.6e}")
     
-    # Extração de pontos ordenados apenas para o plot individual antigo, se necessário
+    # Extração de pontos
     points_x = V.tabulate_dof_coordinates()[:, 0] 
     valores_y = solution.x.array
     indices_ordenados = np.argsort(points_x)
     x_ordenado = points_x[indices_ordenados]
     y_ordenado = valores_y[indices_ordenados]
     
-    # Opcional: Desative se não quiser que abra vários plots durante o loop
-    plot_graphs_1d(mesh_domain=msh, u_exact=lambda x: x*np.exp(-x**2), solution=solution)
-
-    return x_ordenado.reshape(-1, 1), y_ordenado.reshape(-1, 1), solve_time, eval_time, rel_error
+    return x_ordenado.reshape(-1, 1), y_ordenado.reshape(-1, 1), avg_solve_time, avg_eval_time, rel_error
 
 
 def main():
-    # 1. Carregar o arquivo Ground Truth gerado anteriormente
     gt_file = "gt_poisson_1d_512.npz"
     if not os.path.exists(gt_file):
-        raise FileNotFoundError(f"O arquivo '{gt_file}' não foi encontrado. Execute o script 'generate_ground_truth.py' primeiro!")
+        raise FileNotFoundError(f"O arquivo '{gt_file}' não foi encontrado.")
     
     gt_data = np.load(gt_file)
     x_eval = gt_data["x_eval"]
@@ -128,35 +139,27 @@ def main():
     
     output_dir = Path("fem_poisson_1d")
     output_dir.mkdir(exist_ok=True)
-
+    
     mesh_sizes = [64, 128, 256, 512, 1024, 2048, 4096]
     
-    # Inicializa o dicionário de resultados incluindo o eval_time
     resultados_fem = {"N": [], "rel_error": [], "solve_time": [], "eval_time": []}
     
     for nx in mesh_sizes:
-        x, y, solve_time, eval_time, rel_error = solve_poisson_1d(nx, x_eval, u_eval)
+        # Repassando o arquivo ground_truth para a função
+        x, y, solve_time, eval_time, rel_error = solve_poisson_1d(nx, x_eval, u_eval, num_runs=10)
         
-        # Popula o dicionário JSON para o gráfico comparativo
         resultados_fem["N"].append(nx)
         resultados_fem["rel_error"].append(rel_error)
         resultados_fem["solve_time"].append(solve_time)
         resultados_fem["eval_time"].append(eval_time)
 
-        # Salva o resultado geométrico NPZ localmente
         nome_arquivo = output_dir / f'dados_fem_nx{nx}.npz'
-        np.savez_compressed(
-            nome_arquivo, 
-            x_fem=x, 
-            y_fem=y
-        )
+        np.savez_compressed(nome_arquivo, x_fem=x, y_fem=y)
     
-    # Exporta os resultados globais compilados com a estrutura correta para o plot_comparativo
     with open("fem_poisson_1d/fem_results_1d.json", "w") as f_out:
         json.dump(resultados_fem, f_out, indent=4)
         
-    print("\nProcesso concluído!")
-    print("Métricas salvas com sucesso em 'fem_poisson_1d/fem_results_1d.json'")
+    print("\nMétricas salvas com sucesso em 'fem_poisson_1d/fem_results_1d.json'")
 
 if __name__ == "__main__":
     main()

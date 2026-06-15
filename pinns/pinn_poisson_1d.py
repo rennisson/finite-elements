@@ -11,7 +11,6 @@ import jax.numpy as jnp
 import optax
 import jaxopt
 
-
 activation_function = jax.nn.tanh
 
 def u(x):
@@ -22,7 +21,23 @@ def rhs(x):
     """Defines the right hand side of the equation"""
     return (4*x**3 - 6*x) * jnp.exp(-x**2)
 
-# Dominio de x
+# ==========================================
+# 1. CARREGAMENTO DO GROUND TRUTH
+# ==========================================
+gt_file = "gt_poisson_1d_512.npz"
+if not os.path.exists(gt_file):
+    raise FileNotFoundError(f"Arquivo '{gt_file}' não encontrado. Por favor, verifique o diretório.")
+
+gt_data = np.load(gt_file)
+# Assegurar que os arrays estão no formato (512, 1) como esperado pela PINN
+X_test = jnp.array(gt_data['x_eval']).reshape(-1, 1)
+Y_test = jnp.array(gt_data['u_eval']).reshape(-1, 1)
+
+print(f"Ground truth carregado com {X_test.shape[0]} pontos.")
+
+# ==========================================
+# 2. CONFIGURAÇÕES E DADOS DE TREINO
+# ==========================================
 x_lower = 0
 x_upper = 1
 n  = 256
@@ -32,10 +47,7 @@ X = jax.random.uniform(
     key=key_x, shape=(n, 1),
     minval=x_lower, maxval=x_upper
 )
-X_test = jnp.linspace(x_lower, x_upper, 1000).reshape((1000, 1))
-Y_test = X_test * jnp.exp(-X_test**2)
 
-# ===== CONFIGURAÇÕES GERAIS =====
 learning_rate = 1e-4
 b1 = 0.9
 b2 = 0.999
@@ -46,7 +58,9 @@ epochs_adam = 15000
 # Inicializa o otimizador Adam
 optimizer = optax.adam(learning_rate, b1, b2, eps, eps_root)
 
-# ===== FUNÇÕES JAX =====
+# ==========================================
+# 3. FUNÇÕES JAX
+# ==========================================
 @jax.jit
 def forward(x, params):
     *hidden, output = params
@@ -88,119 +102,152 @@ def update(opt_state, params, x):
     params = optax.apply_updates(params, updates)
     return opt_state, params
 
-# ===== LISTA DE ARQUITETURAS =====
+# ==========================================
+# 4. LOOP PRINCIPAL DE TREINAMENTO E MEDIÇÃO
+# ==========================================
 architectures = [
     [1, 1], [2, 1], [5, 1], [10, 1], [20, 1], [40, 1], 
     [5, 5, 1], [10, 10, 1], [20, 20, 1], [40, 40, 1], 
     [5, 5, 5, 1], [10, 10, 10, 1], [20, 20, 20, 1], [40, 40, 40, 1]
 ]
 
-# ===== LOOP PRINCIPAL DE TREINAMENTO =====
+num_runs = 3 # Quantidade de vezes que a rede treinará para tirar a média de tempo
+main_key = jax.random.PRNGKey(42)
+
 for arch in architectures:
     width = [1] + arch
-    arch_str = "_".join(map(str, width)) # Ex: "1_5_5_1" para salvar os nomes dos arquivos
+    arch_str = "_".join(map(str, width))
     
     print("\n" + "="*80)
-    print(f"INICIANDO TREINAMENTO DA ARQUITETURA: {width}")
+    print(f"INICIANDO: ARQUITETURA {width} | {num_runs} EXECUÇÕES")
     print("="*80)
 
-    # 1. Inicializar parâmetros para a arquitetura atual
-    initializer = jax.nn.initializers.glorot_normal()
-    key = jax.random.split(jax.random.PRNGKey(136), len(width) - 1)
-    params = []
+    # Acumuladores de tempo e erro
+    acc_train_adam = 0.0
+    acc_train_lbfgs = 0.0
+    acc_eval_time = 0.0
+    acc_rel_l2 = 0.0
     
-    for k, lin, lout in zip(key, width[:-1], width[1:]):
-        W = initializer(k, (lin, lout), jnp.float32)
-        B = initializer(k, (1, lout), jnp.float32)
-        params.append({'W': W, 'B': B})
+    Y_nn_final = None
+    params_final_flat = None
 
-    # Inicializar o estado do otimizador
-    opt_state = optimizer.init(params)
-
-    # 2. Treinamento ADAM
-    print("-> Iniciando Adam...")
-    t_start_train = time.time()
-    for e in range(epochs_adam):
-        opt_state, params = update(opt_state, params, X)
+    # Compilar a função objetivo L-BFGS para a arquitetura atual fora do loop de medição
+    initializer = jax.nn.initializers.glorot_normal()
+    dummy_key = jax.random.split(main_key, len(width) - 1)
+    dummy_params = []
+    for k, lin, lout in zip(dummy_key, width[:-1], width[1:]):
+        dummy_params.append({'W': jnp.zeros((lin, lout)), 'B': jnp.zeros((1, lout))})
         
-        if e % 5000 == 0:
-            elapsed = time.time() - t_start_train
-            print(f"   {elapsed:.2f}s | Adam Epoch {e:<5}: emp. loss {loss_function(params, X):.12f}")
-
-    loss_adam = loss_function(params, X).block_until_ready()
-    train_time_adam = time.time() - t_start_train
-    print(f"-> Adam concluído. Loss: {loss_adam:.12f}")
-
-    # 3. Refinamento L-BFGS
-    print("\n-> Iniciando L-BFGS...")
-    params_flat, unflatten_fn = jax.flatten_util.ravel_pytree(params)
+    _, unflatten_fn = jax.flatten_util.ravel_pytree(dummy_params)
 
     @jax.jit
     def objective_lbfgs(p_flat):
         return loss_function(unflatten_fn(p_flat), X)
-
-    t0_lbfgs = time.time()
-    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=15000, history_size=50, tol=1e-8)
-    params_final_flat, state = lbfgs.run(params_flat)
-    elapsed_lbfgs = time.time() - t0_lbfgs
-
-    params = unflatten_fn(params_final_flat)
-    loss_lbfgs = loss_function(params, X)
-    num_iters = state.iter_num
-
-    print(f"-> L-BFGS concluído. Loss: {loss_lbfgs:.12f} ({num_iters} iterações)")
-
-    # 4. Avaliação
-    t_start_eval = time.time()
-    Y_nn = forward(X_test, params).reshape(X_test.shape)
-    Y_nn.block_until_ready()
-    eval_time = time.time() - t_start_eval
-
-    norma_erro = jnp.linalg.norm(Y_nn - Y_test)
-    norma_exata = jnp.linalg.norm(Y_test)
-    rel_l2_error = float(norma_erro / norma_exata)
-
-    # 5. Resumo Rápido
-    print("\n--- RESUMO ---")
-    print(f"Erro L2 Relativo: {rel_l2_error:.8e}")
-    print(f"Melhoria de Loss com L-BFGS: {(loss_adam - loss_lbfgs) / loss_adam * 100:.2f}%")
-
-    # 6. Salvar e Gerar Gráficos Silenciosamente
-    fig, ax = plt.subplots(1, 2, figsize=(12, 5))
     
-    # Gráfico 1: Solução
+    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=50000, history_size=50, tol=1e-8)
+
+    # --- LOOP DE MÉDIAS ---
+    for run in range(num_runs):
+        print(f"\n--- Run {run+1}/{num_runs} ---")
+        
+        # 1. Inicializar parâmetros com uma semente diferente por run para não enviesar
+        run_key = jax.random.fold_in(main_key, run)
+        layer_keys = jax.random.split(run_key, len(width) - 1)
+        params = []
+        
+        for k, lin, lout in zip(layer_keys, width[:-1], width[1:]):
+            W = initializer(k, (lin, lout), jnp.float32)
+            B = initializer(k, (1, lout), jnp.float32)
+            params.append({'W': W, 'B': B})
+
+        opt_state = optimizer.init(params)
+
+        # 2. Treinamento ADAM
+        t_start_adam = time.perf_counter()
+        for e in range(epochs_adam):
+            opt_state, params = update(opt_state, params, X)
+        
+        # JAX é assíncrono: devemos bloquear até terminar para medir o tempo corretamente
+        loss_adam = loss_function(params, X).block_until_ready()
+        t_adam = time.perf_counter() - t_start_adam
+        acc_train_adam += t_adam
+        print(f"Adam concluído em {t_adam:.2f}s | Loss: {loss_adam:.8e}")
+
+        # 3. Refinamento L-BFGS
+        params_flat, _ = jax.flatten_util.ravel_pytree(params)
+        
+        t_start_lbfgs = time.perf_counter()
+        params_flat, state = lbfgs.run(params_flat)
+        params = unflatten_fn(params_flat).copy() # Forçar materialização
+        loss_lbfgs = loss_function(params, X).block_until_ready()
+        t_lbfgs = time.perf_counter() - t_start_lbfgs
+        acc_train_lbfgs += t_lbfgs
+        print(f"L-BFGS concluído em {t_lbfgs:.2f}s | Loss: {loss_lbfgs:.8e} ({state.iter_num} iters)")
+
+        # 4. Avaliação nos pontos Ground Truth
+        t_start_eval = time.perf_counter()
+        Y_nn = forward(X_test, params).reshape(X_test.shape)
+        Y_nn.block_until_ready()
+        t_eval = time.perf_counter() - t_start_eval
+        acc_eval_time += t_eval
+
+        # Cálculo do erro relativo para esta run
+        norma_erro = jnp.linalg.norm(Y_nn - Y_test)
+        norma_exata = jnp.linalg.norm(Y_test)
+        rel_l2_error = float(norma_erro / norma_exata)
+        acc_rel_l2 += rel_l2_error
+        
+        # Salvar a última solução para o gráfico e npz
+        if run == num_runs - 1:
+            Y_nn_final = np.asarray(Y_nn)
+            params_final_flat = np.asarray(params_flat)
+
+    # --- CÁLCULO DAS MÉDIAS ---
+    avg_train_adam = acc_train_adam / num_runs
+    avg_train_lbfgs = acc_train_lbfgs / num_runs
+    avg_train_total = avg_train_adam + avg_train_lbfgs
+    avg_eval_time = acc_eval_time / num_runs
+    avg_rel_l2 = acc_rel_l2 / num_runs
+
+    print("\n" + "-"*40)
+    print(f"RESUMO DAS MÉDIAS ({num_runs} RUNS)")
+    print(f"Erro L2 Relativo Médio: {avg_rel_l2:.8e}")
+    print(f"Tempo Médio Treino Total: {avg_train_total:.3f}s")
+    print(f"Tempo Médio Avaliação: {avg_eval_time:.5f}s")
+    print("-"*40)
+
+    # 5. Salvar e Gerar Gráficos Silenciosamente
+    fig, ax = plt.subplots(1, 1, figsize=(8, 5))
+    
     ax[0].plot(X_test, Y_test, '-', color='blue', markersize=0.5, label='Exact solution')
-    ax[0].plot(X_test, Y_nn, '--', color='red', markersize=0.5, label=f'PINN {width}')
-    ax[0].set_title('Aproximação vs Exata')
+    ax[0].plot(X_test, Y_nn_final, '--', color='red', markersize=0.5, label=f'PINN {width}')
+    ax[0].set_title('Aproximação vs Exata (Última Run)')
     ax[0].legend(loc='best')
 
     plt.tight_layout()
     plt.savefig(f'plot_pinn_{arch_str}.png', dpi=150)
-    plt.close() # Importante: fecha o gráfico para liberar a memória ram
+    plt.close()
 
-    # 7. Salvar Dados (.npz)
-    num_params = len(params_final_flat)
-    num_hidden_layers = len(width) - 2
-
+    # 6. Salvar Dados (.npz)
     results = {
         'architecture': width,
-        'num_hidden_layers': int(num_hidden_layers),
+        'num_hidden_layers': len(width) - 1,
         'epochs_adam': epochs_adam,
-        'error_relativo': rel_l2_error,
-        'time_training': float(train_time_adam),
-        'time_training_w_lbfgs': float(train_time_adam + elapsed_lbfgs),
-        'time_evaluation': float(eval_time),
-        'num_params': int(num_params),
-        'y_nn': np.asarray(Y_nn),
-        'network_weights': np.asarray(params_final_flat)
+        'num_runs_avg': num_runs,
+        'error_relativo': avg_rel_l2, 
+        'time_training': avg_train_total,
+        'time_evaluation': avg_eval_time,
+        'num_params': len(params_final_flat),
+        'y_nn': Y_nn_final,
+        'network_weights': params_final_flat
     }
 
-    nome_arquivo = f'dados_pinn_lbfgs_1d_{arch_str}.npz'
+    nome_arquivo = f'dados_pinn_1d_{arch_str}.npz'
     np.savez_compressed(nome_arquivo, **results)
     
     print(f"Gráfico salvo como: plot_pinn_{arch_str}.png")
     print(f"Dados salvos como: {nome_arquivo}\n")
     
 print("="*80)
-print("TODAS AS ARQUITETURAS FORAM TREINADAS E TESTADAS COM SUCESSO!")
+print("TODAS AS ARQUITETURAS FORAM TREINADAS E AVALIADAS COM SUCESSO!")
 print("="*80)

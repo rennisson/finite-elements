@@ -11,6 +11,8 @@ import jax.numpy as jnp
 import optax
 import jaxopt
 
+from scipy.stats import qmc
+
 activation_function = jax.nn.tanh
 
 def u(x):
@@ -43,10 +45,10 @@ x_upper = 1
 n  = 256
 key_x = jax.random.PRNGKey(136)
 
-X = jax.random.uniform(
-    key=key_x, shape=(n, 1),
-    minval=x_lower, maxval=x_upper
-)
+# Gera amostras usando Latin Hypercube Sampling no intervalo [0, 1)
+sampler = qmc.LatinHypercube(d=1, seed=136)
+sample = sampler.random(n=n)
+X = jnp.array(sample, dtype=jnp.float32)
 
 learning_rate = 1e-4
 b1 = 0.9
@@ -216,18 +218,6 @@ for arch in architectures:
     print(f"Tempo Médio Avaliação: {avg_eval_time:.5f}s")
     print("-"*40)
 
-    # 5. Salvar e Gerar Gráficos Silenciosamente
-    fig, ax = plt.subplots(1, 1, figsize=(8, 5))
-    
-    ax[0].plot(X_test, Y_test, '-', color='blue', markersize=0.5, label='Exact solution')
-    ax[0].plot(X_test, Y_nn_final, '--', color='red', markersize=0.5, label=f'PINN {width}')
-    ax[0].set_title('Aproximação vs Exata (Última Run)')
-    ax[0].legend(loc='best')
-
-    plt.tight_layout()
-    plt.savefig(f'plot_pinn_{arch_str}.png', dpi=150)
-    plt.close()
-
     # 6. Salvar Dados (.npz)
     results = {
         'architecture': width,
@@ -245,7 +235,6 @@ for arch in architectures:
     nome_arquivo = f'dados_pinn_1d_{arch_str}.npz'
     np.savez_compressed(nome_arquivo, **results)
     
-    print(f"Gráfico salvo como: plot_pinn_{arch_str}.png")
     print(f"Dados salvos como: {nome_arquivo}\n")
     
 print("="*80)

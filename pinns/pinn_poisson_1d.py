@@ -108,21 +108,21 @@ def update(opt_state, params, x):
 # 4. LOOP PRINCIPAL DE TREINAMENTO E MEDIÇÃO
 # ==========================================
 architectures = [
-    [1, 1], [2, 1], [5, 1], [10, 1], [20, 1], [40, 1], 
+    [5, 1], [10, 1], [20, 1], [40, 1], 
     [5, 5, 1], [10, 10, 1], [20, 20, 1], [40, 40, 1], 
     [5, 5, 5, 1], [10, 10, 10, 1], [20, 20, 20, 1], [40, 40, 40, 1]
 ]
 
-num_runs = 3 # Quantidade de vezes que a rede treinará para tirar a média de tempo
+num_runs = 10 # Quantidade de vezes que a rede treinará para tirar a média de tempo
 main_key = jax.random.PRNGKey(42)
 
 for arch in architectures:
     width = [1] + arch
     arch_str = "_".join(map(str, width))
     
-    print("\n" + "="*80)
+    print("\n" + "="*20)
     print(f"INICIANDO: ARQUITETURA {width} | {num_runs} EXECUÇÕES")
-    print("="*80)
+    print("="*20)
 
     # Acumuladores de tempo e erro
     acc_train_adam = 0.0
@@ -211,12 +211,13 @@ for arch in architectures:
     avg_eval_time = acc_eval_time / num_runs
     avg_rel_l2 = acc_rel_l2 / num_runs
 
-    print("\n" + "-"*40)
+    print("\n" + "-"*20)
     print(f"RESUMO DAS MÉDIAS ({num_runs} RUNS)")
     print(f"Erro L2 Relativo Médio: {avg_rel_l2:.8e}")
+    print(f"Tempo Médio Treino Adam: {avg_train_adam:.3f}s")
     print(f"Tempo Médio Treino Total: {avg_train_total:.3f}s")
     print(f"Tempo Médio Avaliação: {avg_eval_time:.5f}s")
-    print("-"*40)
+    print("-"*20)
 
     # 6. Salvar Dados (.npz)
     results = {
@@ -225,7 +226,8 @@ for arch in architectures:
         'epochs_adam': epochs_adam,
         'num_runs_avg': num_runs,
         'error_relativo': avg_rel_l2, 
-        'time_training': avg_train_total,
+        'time_training': avg_train_adam,
+        'time_training_lbfgs': avg_train_total,
         'time_evaluation': avg_eval_time,
         'num_params': len(params_final_flat),
         'y_nn': Y_nn_final,
@@ -237,6 +239,6 @@ for arch in architectures:
     
     print(f"Dados salvos como: {nome_arquivo}\n")
     
-print("="*80)
+print("="*20)
 print("TODAS AS ARQUITETURAS FORAM TREINADAS E AVALIADAS COM SUCESSO!")
-print("="*80)
+print("="*20)

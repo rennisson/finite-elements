@@ -98,7 +98,12 @@ def loss_function(params, x):
 grad_loss = jax.jit(jax.grad(loss_function, 0))
 
 @jax.jit
-def update(opt_state, params, x):
+def update(opt_state, params):
+    sampler = qmc.LatinHypercube(d=1)
+    sample = sampler.random(n=n)
+
+    x = jnp.array(sample, dtype=jnp.float32)
+    
     grads = grad_loss(params, x)
     updates, opt_state = optimizer.update(grads, opt_state)
     params = optax.apply_updates(params, updates)
@@ -143,8 +148,8 @@ for arch in architectures:
     _, unflatten_fn = jax.flatten_util.ravel_pytree(dummy_params)
 
     @jax.jit
-    def objective_lbfgs(p_flat):
-        return loss_function(unflatten_fn(p_flat), X)
+    def objective_lbfgs(p_flat, x_colloc):
+        return loss_function(unflatten_fn(p_flat), x_colloc)
     
     lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=50000, history_size=50, tol=1e-8)
 
@@ -164,13 +169,16 @@ for arch in architectures:
 
         opt_state = optimizer.init(params)
 
-        # 2. Treinamento ADAM
         t_start_adam = time.perf_counter()
         for e in range(epochs_adam):
-            opt_state, params = update(opt_state, params, X)
+            # Não passamos mais o X. A função usará o array gerado (e congelado) no tracing
+            opt_state, params = update(opt_state, params)
         
-        # JAX é assíncrono: devemos bloquear até terminar para medir o tempo corretamente
-        loss_adam = loss_function(params, X).block_until_ready()
+        # Para calcular a Loss final do Adam, geramos uma amostra
+        sampler_eval = qmc.LatinHypercube(d=1)
+        X_eval_adam = jnp.array(sampler_eval.random(n=n), dtype=jnp.float32)
+        loss_adam = loss_function(params, X_eval_adam).block_until_ready()
+        
         t_adam = time.perf_counter() - t_start_adam
         acc_train_adam += t_adam
         print(f"Adam concluído em {t_adam:.2f}s | Loss: {loss_adam:.8e}")
@@ -178,11 +186,18 @@ for arch in architectures:
         # 3. Refinamento L-BFGS
         params_flat, _ = jax.flatten_util.ravel_pytree(params)
         
+        # Gera os pontos para o L-BFGS com SciPy, espelhando o que o autor faz
+        sampler_lbfgs = qmc.LatinHypercube(d=1)
+        X_lbfgs = jnp.array(sampler_lbfgs.random(n=n), dtype=jnp.float32)
+        
         t_start_lbfgs = time.perf_counter()
-        params_flat, state = lbfgs.run(params_flat)
-        params = unflatten_fn(params_flat).copy() # Forçar materialização
-        loss_lbfgs = loss_function(params, X).block_until_ready()
+        # O x_colloc passa a amostragem recém-gerada para o refinamento
+        params_flat, state = lbfgs.run(params_flat, x_colloc=X_lbfgs)
+        
+        params = unflatten_fn(params_flat).copy() 
+        loss_lbfgs = loss_function(params, X_lbfgs).block_until_ready()
         t_lbfgs = time.perf_counter() - t_start_lbfgs
+        
         acc_train_lbfgs += t_lbfgs
         print(f"L-BFGS concluído em {t_lbfgs:.2f}s | Loss: {loss_lbfgs:.8e} ({state.iter_num} iters)")
 

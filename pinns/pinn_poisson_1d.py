@@ -5,6 +5,7 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 import matplotlib.pyplot as plt
 import numpy as np
 import time
+import json # <-- Adicionado para salvar os resultados
 
 import jax
 import jax.numpy as jnp
@@ -113,6 +114,7 @@ def update(opt_state, params):
 # 4. LOOP PRINCIPAL DE TREINAMENTO E MEDIÇÃO
 # ==========================================
 architectures = [
+    [1, 1], [2, 1],
     [5, 1], [10, 1], [20, 1], [40, 1], 
     [5, 5, 1], [10, 10, 1], [20, 20, 1], [40, 40, 1], 
     [5, 5, 5, 1], [10, 10, 10, 1], [20, 20, 20, 1], [40, 40, 40, 1]
@@ -133,7 +135,7 @@ for arch in architectures:
     acc_train_adam = 0.0
     acc_train_lbfgs = 0.0
     acc_eval_time = 0.0
-    acc_rel_l2 = 0.0
+    l2_errors = [] # <-- Lista para armazenar os erros
     
     Y_nn_final = None
     params_final_flat = None
@@ -212,45 +214,52 @@ for arch in architectures:
         norma_erro = jnp.linalg.norm(Y_nn - Y_test)
         norma_exata = jnp.linalg.norm(Y_test)
         rel_l2_error = float(norma_erro / norma_exata)
-        acc_rel_l2 += rel_l2_error
+        l2_errors.append(rel_l2_error)
+        print(f"Erro L2 Relativo (Run {run+1}): {rel_l2_error:.8e}") # <-- Impressão individual
         
-        # Salvar a última solução para o gráfico e npz
+        # Salvar a última solução para o gráfico e json
         if run == num_runs - 1:
             Y_nn_final = np.asarray(Y_nn)
             params_final_flat = np.asarray(params_flat)
 
-    # --- CÁLCULO DAS MÉDIAS ---
-    avg_train_adam = acc_train_adam / num_runs
-    avg_train_lbfgs = acc_train_lbfgs / num_runs
-    avg_train_total = avg_train_adam + avg_train_lbfgs
-    avg_eval_time = acc_eval_time / num_runs
-    avg_rel_l2 = acc_rel_l2 / num_runs
+    # --- CÁLCULO DAS MÉDIAS E MEDIANAS ---
+    avg_train_adam = float(acc_train_adam / num_runs)
+    avg_train_lbfgs = float(acc_train_lbfgs / num_runs)
+    avg_train_total = float(avg_train_adam + avg_train_lbfgs)
+    avg_eval_time = float(acc_eval_time / num_runs)
+    
+    avg_rel_l2 = float(np.mean(l2_errors))
+    median_rel_l2 = float(np.median(l2_errors))
 
     print("\n" + "-"*20)
     print(f"RESUMO DAS MÉDIAS ({num_runs} RUNS)")
     print(f"Erro L2 Relativo Médio: {avg_rel_l2:.8e}")
+    print(f"Erro L2 Relativo Mediana: {median_rel_l2:.8e}")
     print(f"Tempo Médio Treino Adam: {avg_train_adam:.3f}s")
     print(f"Tempo Médio Treino Total: {avg_train_total:.3f}s")
     print(f"Tempo Médio Avaliação: {avg_eval_time:.5f}s")
     print("-"*20)
 
-    # 6. Salvar Dados (.npz)
+    # 6. Salvar Dados (.json)
     results = {
         'architecture': width,
         'num_hidden_layers': len(width) - 1,
         'epochs_adam': epochs_adam,
         'num_runs_avg': num_runs,
-        'error_relativo': avg_rel_l2, 
+        'error_relativo_medio': avg_rel_l2, 
+        'error_relativo_mediana': median_rel_l2, 
         'time_training': avg_train_adam,
         'time_training_lbfgs': avg_train_total,
         'time_evaluation': avg_eval_time,
-        'num_params': len(params_final_flat),
-        'y_nn': Y_nn_final,
-        'network_weights': params_final_flat
+        'num_params': int(len(params_final_flat)),
+        'y_nn': Y_nn_final.tolist(),             # <-- Convertido para lista serializável
+        'network_weights': params_final_flat.tolist(), # <-- Convertido para lista serializável
+        'l2_errors': l2_errors
     }
 
-    nome_arquivo = f'dados_pinn_1d_{arch_str}.npz'
-    np.savez_compressed(nome_arquivo, **results)
+    nome_arquivo = f'dados_pinn_1d_{arch_str}.json' # <-- Extensão alterada
+    with open(nome_arquivo, 'w') as f:
+        json.dump(results, f, indent=4)
     
     print(f"Dados salvos como: {nome_arquivo}\n")
     

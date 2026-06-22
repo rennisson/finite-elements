@@ -5,7 +5,7 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 import matplotlib.pyplot as plt
 import numpy as np
 import time
-import json # <-- Adicionado para salvar os resultados
+import json
 
 import jax
 import jax.numpy as jnp
@@ -25,24 +25,20 @@ def rhs(x):
     return (4*x**3 - 6*x) * jnp.exp(-x**2)
 
 # ==========================================
-# 1. CARREGAMENTO DO GROUND TRUTH
-# ==========================================
-gt_file = "gt_poisson_1d_512.npz"
-if not os.path.exists(gt_file):
-    raise FileNotFoundError(f"Arquivo '{gt_file}' não encontrado. Por favor, verifique o diretório.")
-
-gt_data = np.load(gt_file)
-# Assegurar que os arrays estão no formato (512, 1) como esperado pela PINN
-X_test = jnp.array(gt_data['x_eval']).reshape(-1, 1)
-Y_test = jnp.array(gt_data['u_eval']).reshape(-1, 1)
-
-print(f"Ground truth carregado com {X_test.shape[0]} pontos.")
-
-# ==========================================
-# 2. CONFIGURAÇÕES E DADOS DE TREINO
+# 1. CONFIGURAÇÕES DO DOMÍNIO E GROUND TRUTH
 # ==========================================
 x_lower = 0
 x_upper = 1
+
+# Geração do Ground Truth com malha de 1000 pontos
+X_test = jnp.linspace(x_lower, x_upper, 1000).reshape((1000, 1))
+Y_test = X_test * jnp.exp(-X_test**2)
+
+print(f"Ground truth gerado analiticamente com {X_test.shape[0]} pontos.")
+
+# ==========================================
+# 2. DADOS E CONFIGURAÇÕES DE TREINO
+# ==========================================
 n  = 256
 key_x = jax.random.PRNGKey(136)
 
@@ -120,7 +116,7 @@ architectures = [
     [5, 5, 5, 1], [10, 10, 10, 1], [20, 20, 20, 1], [40, 40, 40, 1]
 ]
 
-num_runs = 10 # Quantidade de vezes que a rede treinará para tirar a média de tempo
+num_runs = 10 
 main_key = jax.random.PRNGKey(42)
 
 for arch in architectures:
@@ -135,7 +131,7 @@ for arch in architectures:
     acc_train_adam = 0.0
     acc_train_lbfgs = 0.0
     acc_eval_time = 0.0
-    l2_errors = [] # <-- Lista para armazenar os erros
+    l2_errors = [] 
     
     Y_nn_final = None
     params_final_flat = None
@@ -173,7 +169,6 @@ for arch in architectures:
 
         t_start_adam = time.perf_counter()
         for e in range(epochs_adam):
-            # Não passamos mais o X. A função usará o array gerado (e congelado) no tracing
             opt_state, params = update(opt_state, params)
         
         # Para calcular a Loss final do Adam, geramos uma amostra
@@ -193,7 +188,6 @@ for arch in architectures:
         X_lbfgs = jnp.array(sampler_lbfgs.random(n=n), dtype=jnp.float32)
         
         t_start_lbfgs = time.perf_counter()
-        # O x_colloc passa a amostragem recém-gerada para o refinamento
         params_flat, state = lbfgs.run(params_flat, x_colloc=X_lbfgs)
         
         params = unflatten_fn(params_flat).copy() 
@@ -203,7 +197,7 @@ for arch in architectures:
         acc_train_lbfgs += t_lbfgs
         print(f"L-BFGS concluído em {t_lbfgs:.2f}s | Loss: {loss_lbfgs:.8e} ({state.iter_num} iters)")
 
-        # 4. Avaliação nos pontos Ground Truth
+        # 4. Avaliação nos pontos Ground Truth (Malha de 1000 pontos)
         t_start_eval = time.perf_counter()
         Y_nn = forward(X_test, params).reshape(X_test.shape)
         Y_nn.block_until_ready()
@@ -215,9 +209,8 @@ for arch in architectures:
         norma_exata = jnp.linalg.norm(Y_test)
         rel_l2_error = float(norma_erro / norma_exata)
         l2_errors.append(rel_l2_error)
-        print(f"Erro L2 Relativo (Run {run+1}): {rel_l2_error:.8e}") # <-- Impressão individual
+        print(f"Erro L2 Relativo (Run {run+1}): {rel_l2_error:.8e}") 
         
-        # Salvar a última solução para o gráfico e json
         if run == num_runs - 1:
             Y_nn_final = np.asarray(Y_nn)
             params_final_flat = np.asarray(params_flat)
@@ -252,12 +245,11 @@ for arch in architectures:
         'time_training_lbfgs': avg_train_total,
         'time_evaluation': avg_eval_time,
         'num_params': int(len(params_final_flat)),
-        'y_nn': Y_nn_final.tolist(),             # <-- Convertido para lista serializável
-        'network_weights': params_final_flat.tolist(), # <-- Convertido para lista serializável
-        'l2_errors': l2_errors
+        'y_nn': Y_nn_final.tolist(),             
+        'network_weights': params_final_flat.tolist() 
     }
 
-    nome_arquivo = f'dados_pinn_1d_{arch_str}.json' # <-- Extensão alterada
+    nome_arquivo = f'dados_pinn_1d_{arch_str}.json' 
     with open(nome_arquivo, 'w') as f:
         json.dump(results, f, indent=4)
     

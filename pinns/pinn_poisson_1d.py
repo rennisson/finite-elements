@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
-import os
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-
-import matplotlib.pyplot as plt
-import numpy as np
-import time
-import json
-
 import jax
 import jax.numpy as jnp
-import optax
 import jaxopt
+import json
+import numpy as np
+import optax
+import os
+import time
 
+from jax import config
 from scipy.stats import qmc
+
+config.update("jax_enable_x64", True)
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 activation_function = jax.nn.tanh
 
@@ -31,10 +31,16 @@ x_lower = 0
 x_upper = 1
 
 # Geração do Ground Truth com malha de 1000 pontos
-X_test = jnp.linspace(x_lower, x_upper, 1000).reshape((1000, 1))
-Y_test = X_test * jnp.exp(-X_test**2)
+gt_file = "gt_poisson_1d_512.npz"
+if not os.path.exists(gt_file):
+    raise FileNotFoundError(f"Arquivo '{gt_file}' não encontrado. Por favor, verifique o diretório.")
 
-print(f"Ground truth gerado analiticamente com {X_test.shape[0]} pontos.")
+gt_data = np.load(gt_file)
+# Assegurar que os arrays estão no formato (512, 1) como esperado pela PINN
+X_test = jnp.array(gt_data['x_eval']).reshape(-1, 1)
+Y_test = jnp.array(gt_data['u_eval']).reshape(-1, 1)
+
+print(f"Ground truth carregado com {X_test.shape[0]} pontos.")
 
 # ==========================================
 # 2. DADOS E CONFIGURAÇÕES DE TREINO
@@ -149,7 +155,7 @@ for arch in architectures:
     def objective_lbfgs(p_flat, x_colloc):
         return loss_function(unflatten_fn(p_flat), x_colloc)
     
-    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=50000, history_size=50, tol=1e-8)
+    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=50000, history_size=50, tol=1e-12)
 
     # --- LOOP DE MÉDIAS ---
     for run in range(num_runs):
@@ -195,7 +201,7 @@ for arch in architectures:
         t_lbfgs = time.perf_counter() - t_start_lbfgs
         
         acc_train_lbfgs += t_lbfgs
-        print(f"L-BFGS concluído em {t_lbfgs:.2f}s | Loss: {loss_lbfgs:.8e} ({state.iter_num} iters)")
+        print(f"L-BFGS concluído em {t_lbfgs:.2f}s | Loss: {loss_lbfgs:.8e}")
 
         # 4. Avaliação nos pontos Ground Truth (Malha de 1000 pontos)
         t_start_eval = time.perf_counter()
@@ -227,7 +233,6 @@ for arch in architectures:
     print("\n" + "-"*20)
     print(f"RESUMO DAS MÉDIAS ({num_runs} RUNS)")
     print(f"Erro L2 Relativo Médio: {avg_rel_l2:.8e}")
-    print(f"Erro L2 Relativo Mediana: {median_rel_l2:.8e}")
     print(f"Tempo Médio Treino Adam: {avg_train_adam:.3f}s")
     print(f"Tempo Médio Treino Total: {avg_train_total:.3f}s")
     print(f"Tempo Médio Avaliação: {avg_eval_time:.5f}s")
@@ -254,7 +259,3 @@ for arch in architectures:
         json.dump(results, f, indent=4)
     
     print(f"Dados salvos como: {nome_arquivo}\n")
-    
-print("="*20)
-print("TODAS AS ARQUITETURAS FORAM TREINADAS E AVALIADAS COM SUCESSO!")
-print("="*20)

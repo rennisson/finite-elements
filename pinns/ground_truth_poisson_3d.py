@@ -1,7 +1,7 @@
 import numpy as np
 import json
 
-def generate_analytical_solution_3d(num_points=150, filename="gt_poisson_3d_150.json"):
+def generate_analytical_solution_3d(num_points=150, filename="gt_poisson_3d.json"):
     """
     Gera e salva os pontos de avaliação e a solução analítica exata 
     para a equação de Poisson 3D no formato JSON.

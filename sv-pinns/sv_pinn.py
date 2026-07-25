@@ -21,12 +21,50 @@ aproximado sobre o grid Omega = (0,1)^d pela solução da SPDE discretizada
 
 via DST-1 (Transformada de Seno Discreta do Tipo 1)
 """
-import matplotlib.pyplot as plt
 import jax
+import jax.flatten_util
 import jax.numpy as jnp
+import jaxopt
+import json
+import numpy as np
+import os
+import time
+ 
 from jax import random, config
-
+ 
 config.update("jax_enable_x64", True)
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+ 
+activation_function = jax.nn.tanh
+
+def u(x):
+    """Solucao exata da EDP"""
+    return x * jnp.exp(-x**2)
+
+
+def rhs(x):
+    """Define o lado direito da equação"""
+    return (4*x**3 - 6*x) * jnp.exp(-x**2)
+
+
+# ==========================================
+# 1. CONFIGURAÇÕES DO DOMÍNIO E GROUND TRUTH
+# ==========================================
+x_lower = 0
+x_upper = 1
+
+# Geração do Ground Truth com malha de 1000 pontos
+gt_file = "gt_poisson_1d.json"
+if not os.path.exists(gt_file):
+    raise FileNotFoundError(f"Arquivo '{gt_file}' não encontrado.")
+
+with open(gt_file, 'r') as f:
+    gt_data = json.load(f)
+    
+X_test = jnp.array(gt_data['X']).reshape(-1, 1)
+Y_test = jnp.array(gt_data['U_true']).reshape(-1, 1)
+
+print(f"Ground truth carregado com {X_test.shape[0]} pontos.")
 
 # ==========================================
 # 1. DST-I (orthonormal, self-inverse)
@@ -212,17 +250,217 @@ def sv_pinn_loss(residual_interior, phi_samples, boundary_residual=None, lam=0.0
     return L_phi + lam * L_b
 
 
-if __name__ == "__main__":
+# ==========================================
+# 5. ARQUITETURA DA REDE E RESÍDUO DA EDP
+#    (mesma arquitetura/derivadas de pinn_poisson_1d.py; aqui devolvemos o
+#    RESÍDUO BRUTO R(x) = u_xx(x) - rhs(x), pois a perda SV-PINN (Eq. 4.4)
+#    precisa do resíduo ponderado pelas funções de teste, não do seu MSE)
+# ==========================================
+@jax.jit
+def forward(x, params):
+    *hidden, output = params
+    for layer in hidden:
+        x = activation_function(x @ layer['W'] + layer['B'])
+    return x @ output['W'] + output['B']
+ 
+ 
+def laplacian(f, argnum=0):
+    return jax.grad(jax.grad(f, argnums=argnum), argnums=argnum)
+ 
+ 
+def pde(u_fn):
+    return lambda x: laplacian(f=lambda x_: jnp.sum(u_fn(x_)), argnum=0)(x)
+ 
+ 
+def residual_interior(params, x_grid):
+    """R(x_c^(i)) = u_xx(x_c^(i)) - rhs(x_c^(i)) no grid de colocação x_grid
+    (shape (n,)), que deve coincidir com o grid usado para amostrar phi_samples."""
+    def u_net(x_val):
+        x_v = x_val.reshape(1, 1)
+        return forward(x_v, params)[0, 0]
+ 
+    u_xx = jax.vmap(pde(u_net))(x_grid)
+    return u_xx - rhs(x_grid)
+ 
+ 
+def boundary_residual(params):
+    """u_theta(0) - u(0) e u_theta(1) - u(1) (condição de contorno não-homogênea)."""
+    b0 = forward(jnp.array([[0.0]]), params)[0, 0] - u(jnp.array(0.0))
+    b1 = forward(jnp.array([[1.0]]), params)[0, 0] - u(jnp.array(1.0))
+    return jnp.array([b0, b1])
 
-    key = random.PRNGKey(0)
-    n, d, N = 20, 2, 500
 
-    key, sub = random.split(key)
-    phi_samples = sample_test_functions(sub, n=n, d=d, N=N, tau=1.0)
+# ==========================================
+# 6. CALIBRAÇÃO (E ATUALIZAÇÃO) DE LAMBDA PARA CONTORNO NÃO-HOMOGÊNEO
+#    lambda = L_Phi(theta) / L_b(theta)
+#    (equilibra os dois termos da perda (Eq. 4.5) nos parametros atuais;
+#    recalculado periodicamente ao longo do treinamento, acompanhando theta)
+# ==========================================
+def compute_lambda(params, x_grid, phi_samples, eps=1e-10):
+    """eps evita divisao por L_b quase-zero (observado a levar lambda a
+    explodir e o treinamento a divergir quando o contorno ja' esta' bem
+    ajustado mas o interior ainda nao)."""
+    R = residual_interior(params, x_grid)
+    L_phi = sv_pinn_norm_squared(R, phi_samples)
+    L_b = jnp.mean(boundary_residual(params) ** 2)
+    return L_phi / (L_b + eps)
 
-    key, sub = random.split(key)
-    residual = random.normal(sub, (n,) * d)
+# ==========================================
+# 7. TREINAMENTO DAS SV-PINNs (SOMENTE L-BFGS, SEM ADAM)
+# ==========================================
+architectures = [
+    [1, 1], [2, 1],
+    [5, 1], [10, 1], [20, 1], [40, 1],
+    [5, 5, 1], [10, 10, 1], [20, 20, 1], [40, 40, 1],
+    [5, 5, 5, 1], [10, 10, 10, 1], [20, 20, 20, 1], [40, 40, 40, 1]
+]
+ 
+n_colloc = 1024            # pontos de colocação = grid da DST-I (Table A.8, caso 1D)
+N_test_functions = 25000   # numero de funcoes teste amostradas (Table A.8, caso 1D)
+num_runs = 3               # 3 repeticoes, como no protocolo experimental do paper (Sec. 6)
+lbfgs_maxiter = 5000       # SV-PINNs treinadas por L-BFGS por 5,000 passos (Sec. 6)
+tau = 1.0                  # escala fixa de Phi; o equilibrio dos termos da perda e feito via lambda
+n_lambda_updates = 5       # numero de vezes que lambda e recalculado durante o treinamento
+ 
+main_key = jax.random.PRNGKey(42)
+ 
+# grid de colocacao x_c^(i), fixo, identico ao grid usado para amostrar phi (Sec. 4.3.1)
+x_grid = grid_points(n_colloc, d=1)[:, 0]
+ 
+for arch in architectures:
+    width = [1] + arch
+    arch_str = "_".join(map(str, width))
+ 
+    print("\n" + "=" * 20)
+    print(f"INICIANDO: ARQUITETURA {width} | {num_runs} EXECUÇÕES (SV-PINN, L-BFGS)")
+    print("=" * 20)
+ 
+    acc_train_lbfgs = 0.0
+    acc_eval_time = 0.0
+    l2_errors = []
+ 
+    Y_nn_final = None
+    params_final_flat = None
+ 
+    # Inicializador auxiliar apenas para obter a função unflatten (estrutura fixa por arquitetura)
+    initializer = jax.nn.initializers.glorot_normal()
+    dummy_key = jax.random.split(main_key, len(width) - 1)
+    dummy_params = []
+    for k, lin, lout in zip(dummy_key, width[:-1], width[1:]):
+        dummy_params.append({'W': jnp.zeros((lin, lout)), 'B': jnp.zeros((1, lout))})
+ 
+    _, unflatten_fn = jax.flatten_util.ravel_pytree(dummy_params)
+ 
+    @jax.jit
+    def objective_lbfgs(p_flat, phi_samples_run, lam):
+        # nao usa sv_pinn_loss diretamente aqui pois seu "if lam == 0.0"
+        # e' um teste em Python puro, incompativel com um lam rastreado (traced)
+        # pelo jit/L-BFGS quando ele varia a cada segmento; o calculo abaixo
+        # e' a mesma Eq. (4.5), so' que sem esse desvio condicional.
+        params = unflatten_fn(p_flat)
+        R = residual_interior(params, x_grid)
+        Rb = boundary_residual(params)
+        L_phi = sv_pinn_norm_squared(R, phi_samples_run)
+        L_b = jnp.mean(Rb ** 2)
+        return L_phi + lam * L_b
+ 
+    # lambda e' recalculado a cada 'segment_iters' passos (ver loop de treino abaixo),
+    # entao o L-BFGS roda em segmentos menores em vez de um unico run de lbfgs_maxiter passos
+    segment_iters = max(1, lbfgs_maxiter // n_lambda_updates)
+    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=segment_iters, history_size=50, tol=1e-12)
+ 
+    for run in range(num_runs):
+        print(f"\n--- Run {run + 1}/{num_runs} ---")
+ 
+        # 1. Inicializar parâmetros com uma semente diferente por run
+        run_key = jax.random.fold_in(main_key, run)
+        layer_keys = jax.random.split(run_key, len(width) - 1)
+        params = []
+        for k, lin, lout in zip(layer_keys, width[:-1], width[1:]):
+            W = initializer(k, (lin, lout), jnp.float64)
+            B = initializer(k, (1, lout), jnp.float64)
+            params.append({'W': W, 'B': B})
+ 
+        params_flat, _ = jax.flatten_util.ravel_pytree(params)
+ 
+        # 2. Amostrar as N funções teste (fixas durante todo o treino desta run, Sec. 4.5)
+        run_key, sub = jax.random.split(run_key)
+        phi_samples_run = sample_test_functions(sub, n=n_colloc, d=1, N=N_test_functions, tau=tau)
+ 
+        # 3. Lambda inicial: lambda = L_Phi(theta_0) / L_b(theta_0)
+        lam = compute_lambda(params, x_grid, phi_samples_run)
+ 
+        # 4. Otimização via L-BFGS em segmentos, recalculando lambda entre eles
+        t_start_lbfgs = time.perf_counter()
+        for seg in range(n_lambda_updates):
+            params_flat, state = lbfgs.run(params_flat, phi_samples_run=phi_samples_run, lam=lam)
+            params = unflatten_fn(params_flat)
+            lam = compute_lambda(params, x_grid, phi_samples_run)  # atualiza lambda com os params atuais
+        params = params.copy()
+        loss_lbfgs = objective_lbfgs(params_flat, phi_samples_run, lam).block_until_ready()
+        t_lbfgs = time.perf_counter() - t_start_lbfgs
+ 
+        acc_train_lbfgs += t_lbfgs
+        print(f"L-BFGS concluído em {t_lbfgs:.2f}s | lambda final = {float(lam):.4e} | Loss: {loss_lbfgs:.8e}")
+ 
+        # 5. Avaliação nos pontos Ground Truth
+        t_start_eval = time.perf_counter()
+        Y_nn = forward(X_test, params).reshape(X_test.shape)
+        Y_nn.block_until_ready()
+        t_eval = time.perf_counter() - t_start_eval
+        acc_eval_time += t_eval
+ 
+        norma_erro = jnp.linalg.norm(Y_nn - Y_test)
+        norma_exata = jnp.linalg.norm(Y_test)
+        rel_l2_error = float(norma_erro / norma_exata)
+        l2_errors.append(rel_l2_error)
+        print(f"Erro L2 Relativo (Run {run + 1}): {rel_l2_error:.8e}")
+ 
+        if run == num_runs - 1:
+            Y_nn_final = np.asarray(Y_nn)
+            params_final_flat = np.asarray(params_flat)
+ 
+    avg_train_lbfgs = float(acc_train_lbfgs / num_runs)
+    avg_eval_time = float(acc_eval_time / num_runs)
+    avg_rel_l2 = float(np.mean(l2_errors))
+    median_rel_l2 = float(np.median(l2_errors))
+ 
+    print("\n" + "-" * 20)
+    print(f"RESUMO DAS MÉDIAS ({num_runs} RUNS)")
+    print(f"Erro L2 Relativo Médio: {avg_rel_l2:.8e}")
+    print(f"Tempo Médio Treino L-BFGS: {avg_train_lbfgs:.3f}s")
+    print(f"Tempo Médio Avaliação: {avg_eval_time:.5f}s")
+    print("-" * 20)
+ 
+    results = {
+        'architecture': width,
+        'num_hidden_layers': len(width) - 1,
+        'method': 'SV-PINN (L-BFGS)',
+        'n_colloc': n_colloc,
+        'n_test_functions': N_test_functions,
+        'lbfgs_maxiter': lbfgs_maxiter,
+        'num_runs_avg': num_runs,
+        'error_relativo_medio': avg_rel_l2,
+        'error_relativo_mediana': median_rel_l2,
+        'time_training_lbfgs': avg_train_lbfgs,
+        'time_evaluation': avg_eval_time,
+        'num_params': int(len(params_final_flat))
+    }
 
-    L_direct = sv_pinn_norm_squared(residual, phi_samples)
+    nome_arquivo = f'dados_svpinn_1d_{arch_str}.json'
+    with open(nome_arquivo, 'w') as f:
+        json.dump(results, f, indent=4)
 
-    print("L_Phi (Eq. 4.4)      :", float(L_direct))
+    points = {
+        'x': X_test.flatten().tolist(),
+        'u_exact': Y_test.flatten().tolist(),
+        'y_nn': Y_nn_final.tolist(),
+        'network_weights': params_final_flat.tolist()
+    }
+
+    nome_arquivo = f'pontos_svpinn_1d_{arch_str}.json'
+    with open(nome_arquivo, 'w') as f:
+        json.dump(points, f, indent=4)
+ 
+    print(f"Dados salvos como: {nome_arquivo}\n")
+ 

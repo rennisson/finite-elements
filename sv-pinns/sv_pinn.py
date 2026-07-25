@@ -151,51 +151,6 @@ def grid_points(n, d, dtype=jnp.float64):
     mesh = jnp.meshgrid(*coords, indexing="ij")
     return jnp.stack(mesh, axis=-1)  # shape (n,)*d + (d,)
 
-# ==========================================
-# 5. Example: reproduce realisations analogous to Figure 1 (a)
-# ==========================================
-if __name__ == "__main__":
-
-    key = random.PRNGKey(64)
-
-    fig, ax = plt.subplots(1, 1, figsize=(5,5))
-
-    # d = 1
-    n1, tau1 = 1024, 10.0
-    phi1 = sample_test_function(key, n1, d=1, tau=tau1)
-    x1 = grid_points(n1, 1)[:, 0]
-    ax.plot(x1, phi1)
-    ax.set_title("Funções teste (d=1)")
-
-    plt.tight_layout()
-    plt.savefig("phi_realisations_d1.png", dpi=150)
-
-    fig, ax = plt.subplots(1, 1, figsize=(5,5))
-
-    # d = 2
-    n2, tau2 = 512, 10.0
-    key, sub = random.split(key)
-    phi2 = sample_test_function(sub, n2, 2, tau=tau2)
-    im = ax.imshow(phi2.T, origin="lower", extent=[0, 1, 0, 1], cmap="viridis")
-    ax.set_title("Funções teste (d=2)")
-    fig.colorbar(im, ax=ax)
-
-    plt.tight_layout()
-    plt.savefig("phi_realisations_d2.png", dpi=150)
-
-    fig, ax = plt.subplots(1, 1, figsize=(5,5))
-
-    # d = 3, slice at x1 = 0.5
-    n3, tau3 = 264, 10.0
-    key, sub = random.split(key)
-    phi3 = sample_test_function(sub, n3, 3, tau=tau3)
-    mid = n3 // 2
-    im2 = ax.imshow(phi3[mid].T, origin="lower", extent=[0, 1, 0, 1], cmap="viridis")
-    ax.set_title("Funções teste (d=3, slice x1 = 0.5)")
-    fig.colorbar(im2, ax=ax)
-
-    plt.tight_layout()
-    plt.savefig("phi_realisations_d3.png", dpi=150)
 
 # ==========================================
 # 1. Empirical Phi-stochastically weak norm squared (Eq. 4.4)
@@ -227,35 +182,6 @@ def sv_pinn_norm_squared(residual, phi_samples):
     # retorna a media sobre o eixo j (o mesmo que foi ignorado na construção da tupla inicial)
     return jnp.mean(inner_products ** 2)
 
-# ==========================================
-# 2. Formulacao pragmatica com pesos pontuais (Eq. 4.14)
-#    -- mesma quantidade que sv_pinn_norm_squared, reescrita como PINN
-#    ponderada por pesos aleatorios lambda_c^(i) e lambda_c^(i,i').
-#    Custo O(N_c^2): usada aqui apenas para verificacao/interpretacao,
-#    nao para treino.
-# ==========================================
-def sv_pinn_norm_squared_pragmatic(residual, phi_samples):
-    """
-    L_{Phi^(n)}(theta) = (1/(N N_c^2)) [ sum_i lambda_c^(i) R_i^2
-                          + sum_{i != i'} lambda_c^(i,i') R_i R_i' ]
-
-    com lambda_c^(i) = sum_j |phi_j(x_c^i)|^2 e
-        lambda_c^(i,i') = sum_j phi_j(x_c^i) phi_j(x_c^i').
-
-    Equivalente a sv_pinn_norm_squared, mantido para conferencia numerica
-    e para a leitura de "PINN com pesos aleatorios nao-treinaveis" (Sec. 4.5).
-    """
-    N = phi_samples.shape[0]
-    Nc = residual.size
-
-    R = residual.reshape(-1)                    # (Nc,)
-    Phi = phi_samples.reshape(N, -1)             # (N, Nc)
-
-    # lambda_c^(i,i') = sum_j phi_j(x_i) phi_j(x_i'), incluindo i = i'
-    # (a diagonal e' justamente lambda_c^(i))
-    Lambda = Phi.T @ Phi                         # (Nc, Nc)
-
-    return (R @ (Lambda @ R)) / (N * Nc ** 2)
 
 # ==========================================
 # 3. Perda total da SV-PINN (Eq. 4.5)
@@ -285,11 +211,8 @@ def sv_pinn_loss(residual_interior, phi_samples, boundary_residual=None, lam=0.0
     L_b = jnp.mean(boundary_residual ** 2)
     return L_phi + lam * L_b
 
-# ==========================================
-# 4. Verificacao numerica: (4.4) == (4.14)
-# ==========================================
+
 if __name__ == "__main__":
-    from jax import random
 
     key = random.PRNGKey(0)
     n, d, N = 20, 2, 500
@@ -301,8 +224,5 @@ if __name__ == "__main__":
     residual = random.normal(sub, (n,) * d)
 
     L_direct = sv_pinn_norm_squared(residual, phi_samples)
-    L_pragmatic = sv_pinn_norm_squared_pragmatic(residual, phi_samples)
 
     print("L_Phi (Eq. 4.4)      :", float(L_direct))
-    print("L_Phi (Eq. 4.14)     :", float(L_pragmatic))
-    print("diferenca absoluta   :", float(jnp.abs(L_direct - L_pragmatic)))

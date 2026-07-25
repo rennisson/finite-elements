@@ -453,7 +453,6 @@ for arch in architectures:
 
     points = {
         'x': X_test.flatten().tolist(),
-        'u_exact': Y_test.flatten().tolist(),
         'y_nn': Y_nn_final.tolist(),
         'network_weights': params_final_flat.tolist()
     }

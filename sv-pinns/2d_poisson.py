@@ -353,9 +353,9 @@ architectures = [
     [120, 120, 120, 120, 120, 1]
 ]
 
-n_colloc = 64              # pontos de colocação por eixo -> grid n_colloc x n_colloc (DST-I 2D)
-N_test_functions = 5000    # número de funções teste amostradas (Phi^(h))
-num_runs = 3               # repetições, como no protocolo experimental do paper (Sec. 6)
+n_colloc = 128              # pontos de colocação por eixo -> grid n_colloc x n_colloc (DST-I 2D)
+N_test_functions = 25000    # número de funções teste amostradas (Phi^(h))
+num_runs = 10               # repetições, como no protocolo experimental do paper (Sec. 6)
 lbfgs_maxiter = 5000        # SV-PINNs treinadas por L-BFGS (Sec. 6)
 tau = 1.0                  # escala fixa de Phi; o equilíbrio dos termos da perda é feito via lambda
 n_lambda_updates = 5        # número de vezes que lambda é recalculado durante o treinamento
@@ -493,9 +493,9 @@ for arch in architectures:
         json.dump(results, f, indent=4)
     
     points = {
-        'x': X_mesh_gt.flatten().tolist(),
-        'y': Y_mesh_gt.tolist(),
-        'y_nn': U_nn_final.tolist(),
+        'x': np.asarray(X_mesh_gt[:, 0]).tolist(),
+        'y': np.asarray(Y_mesh_gt[0, :]).tolist(),
+        'y_nn': np.asarray(U_nn_final).tolist(),
         'network_weights': params_final_flat.tolist()
     }
 

@@ -406,7 +406,9 @@ for arch in architectures:
     # lambda é recalculado a cada 'segment_iters' passos (ver loop de treino abaixo),
     # então o L-BFGS roda em segmentos menores em vez de um único run de lbfgs_maxiter passos
     segment_iters = max(1, lbfgs_maxiter // n_lambda_updates)
-    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=segment_iters, history_size=50, tol=1e-12)
+    lbfgs = jaxopt.LBFGS(
+        fun=objective_lbfgs, maxiter=segment_iters, history_size=200, tol=1e-9, linesearch='zoom'
+    )
 
     for run in range(num_runs):
         print(f"\n--- Run {run + 1}/{num_runs} ---")

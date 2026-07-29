@@ -249,18 +249,44 @@ def sv_pinn_loss(residual_interior, phi_samples, boundary_residual=None, lam=0.0
 
 # ==========================================
 # 5. ARQUITETURA DA REDE E RESÍDUO DA EDP (Poisson 2D, condições mistas)
-#    (mesma arquitetura/derivadas de pinn_poisson_2d.py; aqui devolvemos os
-#    RESÍDUOS BRUTOS, pois a perda SV-PINN (Eq. 4.4) precisa do resíduo
-#    ponderado pelas funções de teste, não do seu MSE)
+#    MLP MODIFICADA (Sec. 4.1 do paper / Eq. 4.1), com conexoes residuais
+#    multiplicativas: U(x) = sigma(W1 x + b1), V(x) = sigma(W2 x + b2),
+#    g^(l) = f^(l) * U + (1 - f^(l)) * V a cada camada oculta.
+#    Assume que todas as camadas ocultas tem a MESMA largura r (exigido
+#    pela multiplicacao elemento-a-elemento com U, V).
+#
+#    Aqui devolvemos os RESÍDUOS BRUTOS, pois a perda SV-PINN (Eq. 4.4)
+#    precisa do resíduo ponderado pelas funções de teste, não do seu MSE.
 #
 #    d_n u(0,y) = 0, d_n u(1,y) = 0, u(x,0) = 0, d_n u(x,1) = 0  (Eq. 7)
 # ==========================================
+def init_mlp_params(key, width, dtype=jnp.float64):
+    """width = [d_in, r, r, ..., r, 1] (mesma largura r em todas as camadas
+    ocultas). Retorna [encode] + [camada_1, ..., camada_K, saida], onde
+    'encode' guarda os pesos de U e V (Eq. 4.1)."""
+    initializer = jax.nn.initializers.glorot_normal()
+    keys = jax.random.split(key, 4 + (len(width) - 1))
+    WU = initializer(keys[0], (width[0], width[1]), dtype)
+    BU = initializer(keys[1], (1, width[1]), dtype)
+    WV = initializer(keys[2], (width[0], width[1]), dtype)
+    BV = initializer(keys[3], (1, width[1]), dtype)
+    params = [{'WU': WU, 'BU': BU, 'WV': WV, 'BV': BV}]
+    for k, lin, lout in zip(keys[4:], width[:-1], width[1:]):
+        W = initializer(k, (lin, lout), dtype)
+        B = initializer(k, (1, lout), dtype)
+        params.append({'W': W, 'B': B})
+    return params
+
+
 @jax.jit
 def forward(xy, params):
+    encode, *hidden, output = params
+    U = activation_function(xy @ encode['WU'] + encode['BU'])
+    V = activation_function(xy @ encode['WV'] + encode['BV'])
     x = xy
-    *hidden, output = params
     for layer in hidden:
-        x = activation_function(x @ layer['W'] + layer['B'])
+        f = activation_function(x @ layer['W'] + layer['B'])
+        x = f * U + (1 - f) * V
     return x @ output['W'] + output['B']
 
 
@@ -395,16 +421,15 @@ for arch in architectures:
     acc_train_lbfgs = 0.0
     acc_eval_time = 0.0
     l2_errors = []
+    l2_error_runs = []   # trajetoria (por passo) de erro L2, uma lista por run
+    loss_runs = []        # trajetoria (por passo) da perda, uma lista por run
 
     U_nn_final = None
     params_final_flat = None
 
     initializer = jax.nn.initializers.glorot_normal()
-    dummy_key = jax.random.split(main_key, len(width) - 1)
-    dummy_params = []
-    for k, lin, lout in zip(dummy_key, width[:-1], width[1:]):
-        dummy_params.append({'W': jnp.zeros((lin, lout), dtype=jnp.float64),
-                              'B': jnp.zeros((1, lout), dtype=jnp.float64)})
+    dummy_params = init_mlp_params(main_key, width, dtype=jnp.float64)
+    dummy_params = jax.tree_util.tree_map(jnp.zeros_like, dummy_params)
 
     _, unflatten_fn = jax.flatten_util.ravel_pytree(dummy_params)
 
@@ -412,31 +437,37 @@ for arch in architectures:
     def objective_lbfgs(p_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam):
         # nao usa sv_pinn_loss diretamente aqui pois seu "if lam == 0.0"
         # e' um teste em Python puro, incompativel com um lam rastreado (traced)
-        # pelo jit/L-BFGS quando ele varia a cada segmento; o calculo abaixo
+        # pelo jit/L-BFGS quando ele varia ao longo do treino; o calculo abaixo
         # e' a mesma Eq. (4.5), so' que sem esse desvio condicional.
         params = unflatten_fn(p_flat)
         R = residual_interior(params, xy_grid)
         Rb = boundary_residual(params, xy_x0, xy_x1, xy_y0, xy_y1)
         L_phi = sv_pinn_norm_squared(R, phi_samples_run)
         L_b = jnp.mean(Rb ** 2)
-        return L_phi + lam * L_b
+        loss = L_phi + lam * L_b
 
-    # lambda e' recalculado a cada 'segment_iters' passos (ver loop de treino abaixo),
-    # entao o L-BFGS roda em segmentos menores em vez de um unico run de lbfgs_maxiter passos
+        # erro L2 relativo computado no mesmo passo (sem forward extra depois),
+        # para registrar a trajetoria de convergencia (analogo ao state.aux
+        # de jaxopt usado no codigo de referencia do autor, nn.py)
+        u_nn = forward(xy_points_gt, params).reshape(X_mesh_gt.shape)
+        l2 = jnp.linalg.norm(u_nn - U_true_gt) / jnp.linalg.norm(U_true_gt)
+        return loss, {'loss': loss, 'l2': l2}
+
+    # lambda continua sendo recalculado a cada 'segment_iters' passos, mas agora
+    # sem reiniciar o estado do L-BFGS entre atualizacoes: o loop abaixo mantem
+    # um unico 'state' (init_state + update em cada passo), preservando o
+    # historico de curvatura quase-Newton por toda a otimizacao; so' o valor de
+    # 'lam' passado a 'update' muda periodicamente.
     segment_iters = max(1, lbfgs_maxiter // n_lambda_updates)
-    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=segment_iters, history_size=50, tol=1e-12)
+    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=lbfgs_maxiter, has_aux=True,
+                          history_size=50, tol=1e-12)
 
     for run in range(num_runs):
         print(f"\n--- Run {run + 1}/{num_runs} ---")
 
-        # 1. Inicializar parâmetros com uma semente diferente por run
+        # 1. Inicializar parâmetros (MLP modificada) com uma semente diferente por run
         run_key = jax.random.fold_in(main_key, run)
-        layer_keys = jax.random.split(run_key, len(width) - 1)
-        params = []
-        for k, lin, lout in zip(layer_keys, width[:-1], width[1:]):
-            W = initializer(k, (lin, lout), jnp.float64)
-            B = initializer(k, (1, lout), jnp.float64)
-            params.append({'W': W, 'B': B})
+        params = init_mlp_params(run_key, width, dtype=jnp.float64)
 
         params_flat, _ = jax.flatten_util.ravel_pytree(params)
 
@@ -453,26 +484,40 @@ for arch in architectures:
         # 4. Lambda inicial: lambda = L_Phi(theta_0) / L_b(theta_0), ja com tau calibrado
         lam = compute_lambda(params, xy_grid, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1)
 
-        # 5. Otimização via L-BFGS em segmentos, recalculando lambda entre eles
+        # 5. Otimização via L-BFGS, um passo por vez (init_state + update em loop),
+        #    registrando loss e erro L2 a cada passo para a trajetoria de convergencia
+        state = lbfgs.init_state(params_flat, phi_samples_run=phi_samples_run,
+                                  xy_x0=xy_x0, xy_x1=xy_x1, xy_y0=xy_y0, xy_y1=xy_y1, lam=lam)
+
+        run_l2_traj = []
+        run_loss_traj = []
+
         t_start_lbfgs = time.perf_counter()
-        for seg in range(n_lambda_updates):
-            params_flat, state = lbfgs.run(
-                params_flat, phi_samples_run=phi_samples_run,
+        for step in range(lbfgs_maxiter):
+            if step > 0 and step % segment_iters == 0:
+                params = unflatten_fn(params_flat)
+                lam = compute_lambda(params, xy_grid, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1)
+
+            params_flat, state = lbfgs.update(
+                params_flat, state, phi_samples_run=phi_samples_run,
                 xy_x0=xy_x0, xy_x1=xy_x1, xy_y0=xy_y0, xy_y1=xy_y1, lam=lam
             )
-            params = unflatten_fn(params_flat)
-            lam = compute_lambda(params, xy_grid, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1)
-        params = params.copy()
-        loss_lbfgs = objective_lbfgs(
-            params_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam
-        ).block_until_ready()
+            run_l2_traj.append(float(state.aux['l2']))
+            run_loss_traj.append(float(state.aux['loss']))
+
+        params = unflatten_fn(params_flat).copy()
+        loss_lbfgs = run_loss_traj[-1]
         t_lbfgs = time.perf_counter() - t_start_lbfgs
+
+        l2_error_runs.append(run_l2_traj)
+        loss_runs.append(run_loss_traj)
 
         acc_train_lbfgs += t_lbfgs
         print(f"L-BFGS concluído em {t_lbfgs:.2f}s | tau = {float(tau_run):.4e} | "
               f"lambda final = {float(lam):.4e} | Loss: {loss_lbfgs:.8e}")
 
-        # 6. Avaliação nos pontos Ground Truth
+        # 6. Avaliação nos pontos Ground Truth (u_nn para os pontos salvos ao final;
+        #    o erro L2 final ja' e' o ultimo valor da trajetoria registrada acima)
         t_start_eval = time.perf_counter()
         u_nn_flat = forward(xy_points_gt, params)
         u_nn = u_nn_flat.reshape(X_mesh_gt.shape)
@@ -480,9 +525,7 @@ for arch in architectures:
         t_eval = time.perf_counter() - t_start_eval
         acc_eval_time += t_eval
 
-        norma_erro = jnp.linalg.norm(u_nn - U_true_gt)
-        norma_exata = jnp.linalg.norm(U_true_gt)
-        rel_l2_error = float(norma_erro / norma_exata)
+        rel_l2_error = run_l2_traj[-1]
         l2_errors.append(rel_l2_error)
         print(f"Erro L2 Relativo (Run {run + 1}): {rel_l2_error:.8e}")
 
@@ -524,6 +567,7 @@ for arch in architectures:
     points = {
         'x_mesh': np.asarray(X_mesh_gt).tolist(),
         'y_mesh': np.asarray(Y_mesh_gt).tolist(),
+        'u_exact': np.asarray(U_true_gt).tolist(),
         'u_nn': U_nn_final.tolist(),
         'network_weights': params_final_flat.tolist()
     }
@@ -532,4 +576,16 @@ for arch in architectures:
     with open(nome_arquivo_pontos, 'w', encoding='utf-8') as f:
         json.dump(points, f, indent=4)
 
-    print(f"Dados salvos como: {nome_arquivo} e {nome_arquivo_pontos}\n")
+    trajetoria = {
+        'architecture': width,
+        'method': 'SV-PINN 2D (L-BFGS)',
+        'steps': list(range(1, lbfgs_maxiter + 1)),   # eixo x: passo do L-BFGS
+        'l2_error_runs': l2_error_runs,                 # shape (num_runs, lbfgs_maxiter)
+        'loss_runs': loss_runs                           # shape (num_runs, lbfgs_maxiter)
+    }
+
+    nome_arquivo_trajetoria = f'trajetoria_svpinn_2d_{arch_str}.json'
+    with open(nome_arquivo_trajetoria, 'w', encoding='utf-8') as f:
+        json.dump(trajetoria, f)
+
+    print(f"Dados salvos como: {nome_arquivo}, {nome_arquivo_pontos} e {nome_arquivo_trajetoria}\n")

@@ -374,21 +374,36 @@ for arch in architectures:
     # Mesma otimizacao de um segmento que `lbfgs.run` fazia, mas passo-a-passo
     # (lbfgs.init_state + lbfgs.update via jax.lax.scan) para registrar a
     # trajetoria do loss e do erro L2 relativo (contra X_test/Y_test) a cada
-    # passo, necessaria para o plot da curva de treinamento.
+    # 10 passos, necessaria para o plot da curva de treinamento.
     @jax.jit
     def lbfgs_segment_with_trajectory(p_flat, phi_samples_run, lam):
         init_state = lbfgs.init_state(p_flat, phi_samples_run=phi_samples_run, lam=lam)
+        
+        eval_freq = 10
+        # Reduz o tamanho do scan para iterar sobre blocos de passos
+        num_blocks = segment_iters // eval_freq
 
-        def step_fn(carry, _):
+        def block_fn(carry, _):
             p, state = carry
-            p, state = lbfgs.update(p, state, phi_samples_run=phi_samples_run, lam=lam)
-            params_ = unflatten_fn(p)
+            
+            # Loop interno: executa 10 iteracoes apenas atualizando os pesos (sem inferencia)
+            def inner_step(i, val):
+                p_in, state_in = val
+                p_out, state_out = lbfgs.update(p_in, state_in, phi_samples_run=phi_samples_run, lam=lam)
+                return p_out, state_out
+                
+            p_next, state_next = jax.lax.fori_loop(0, eval_freq, inner_step, (p, state))
+            
+            # Avaliacao: ocorre apenas 1x ao final do bloco de 10 passos
+            params_ = unflatten_fn(p_next)
             Y_nn_step = forward(X_test, params_)
             l2_err = jnp.linalg.norm(Y_nn_step - Y_test) / jnp.linalg.norm(Y_test)
-            return (p, state), (state.value, l2_err)
+            
+            return (p_next, state_next), (state_next.value, l2_err)
 
         (p_final, state_final), (loss_traj, err_traj) = jax.lax.scan(
-            step_fn, (p_flat, init_state), xs=None, length=segment_iters)
+            block_fn, (p_flat, init_state), xs=None, length=num_blocks)
+            
         return p_final, state_final, loss_traj, err_traj
  
     for run in range(num_runs):
@@ -505,7 +520,7 @@ for arch in architectures:
         'n_test_functions': N_test_functions,
         'lbfgs_maxiter': lbfgs_maxiter,
         'num_runs': num_runs,
-        'steps': list(range(1, lbfgs_maxiter + 1)),
+        'steps': list(range(10, lbfgs_maxiter + 1, 10)),
         'l2_relative_error_per_run': all_l2_error_trajectories.tolist(),
         'loss_per_run': all_loss_trajectories.tolist(),
         'l2_relative_error_mean': all_l2_error_trajectories.mean(axis=0).tolist(),

@@ -435,75 +435,101 @@ for arch in architectures:
 
     @jax.jit
     def objective_lbfgs(p_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam):
-        # nao usa sv_pinn_loss diretamente aqui pois seu "if lam == 0.0"
-        # e' um teste em Python puro, incompativel com um lam rastreado (traced)
-        # pelo jit/L-BFGS quando ele varia ao longo do treino; o calculo abaixo
-        # e' a mesma Eq. (4.5), so' que sem esse desvio condicional.
+        # A avaliacao da métrica L2 (que consome muito tempo) foi removida do objetivo.
         params = unflatten_fn(p_flat)
         R = residual_interior(params, xy_grid)
         Rb = boundary_residual(params, xy_x0, xy_x1, xy_y0, xy_y1)
         L_phi = sv_pinn_norm_squared(R, phi_samples_run)
         L_b = jnp.mean(Rb ** 2)
-        loss = L_phi + lam * L_b
+        return L_phi + lam * L_b
 
-        # erro L2 relativo computado no mesmo passo (sem forward extra depois),
-        # para registrar a trajetoria de convergencia (analogo ao state.aux
-        # de jaxopt usado no codigo de referencia do autor, nn.py)
-        u_nn = forward(xy_points_gt, params).reshape(X_mesh_gt.shape)
-        l2 = jnp.linalg.norm(u_nn - U_true_gt) / jnp.linalg.norm(U_true_gt)
-        return loss, {'loss': loss, 'l2': l2}
-
-    # lambda continua sendo recalculado a cada 'segment_iters' passos, mas agora
-    # sem reiniciar o estado do L-BFGS entre atualizacoes: o loop abaixo mantem
-    # um unico 'state' (init_state + update em cada passo), preservando o
-    # historico de curvatura quase-Newton por toda a otimizacao; so' o valor de
-    # 'lam' passado a 'update' muda periodicamente.
     segment_iters = max(1, lbfgs_maxiter // n_lambda_updates)
-    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=lbfgs_maxiter, has_aux=True,
+    
+    # maxiter definido para segment_iters; has_aux removido
+    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=segment_iters,
                           history_size=50, tol=1e-12)
+
+    # ---------------------------------------------------------
+    # NOVIDADE: Segmento JIT-compilado para rodar o L-BFGS em blocos
+    # ---------------------------------------------------------
+    @jax.jit
+    def lbfgs_segment_with_trajectory(p_flat, state, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam):
+        eval_freq = 10
+        num_blocks = segment_iters // eval_freq
+
+        def block_fn(carry, _):
+            p, s = carry
+
+            # Loop interno: executa 10 iteracoes apenas atualizando os pesos (sem inferencia)
+            def inner_step(i, val):
+                p_in, s_in = val
+                p_out, s_out = lbfgs.update(p_in, s_in,
+                                            phi_samples_run=phi_samples_run,
+                                            xy_x0=xy_x0, xy_x1=xy_x1,
+                                            xy_y0=xy_y0, xy_y1=xy_y1,
+                                            lam=lam)
+                return p_out, s_out
+
+            p_next, s_next = jax.lax.fori_loop(0, eval_freq, inner_step, (p, s))
+
+            # Avaliacao: ocorre apenas 1x ao final do bloco de 10 passos
+            params_ = unflatten_fn(p_next)
+            u_nn = forward(xy_points_gt, params_).reshape(X_mesh_gt.shape)
+            l2_err = jnp.linalg.norm(u_nn - U_true_gt) / jnp.linalg.norm(U_true_gt)
+
+            # state.value guarda o ultimo valor da Loss calculado
+            return (p_next, s_next), (s_next.value, l2_err)
+
+        (p_final, state_final), (loss_traj, err_traj) = jax.lax.scan(
+            block_fn, (p_flat, state), xs=None, length=num_blocks)
+
+        return p_final, state_final, loss_traj, err_traj
+
 
     for run in range(num_runs):
         print(f"\n--- Run {run + 1}/{num_runs} ---")
 
-        # 1. Inicializar parâmetros (MLP modificada) com uma semente diferente por run
+        # 1. Inicializar parâmetros
         run_key = jax.random.fold_in(main_key, run)
         params = init_mlp_params(run_key, width, dtype=jnp.float64)
-
         params_flat, _ = jax.flatten_util.ravel_pytree(params)
 
-        # 2. Amostrar as N funções teste e os pontos de contorno (fixos durante
-        #    todo o treino desta run, Sec. 4.5), com tau = 1 (calibrado a seguir)
+        # 2. Amostrar as N funções teste e os pontos de contorno
         run_key, sub_phi, sub_bc = jax.random.split(run_key, 3)
         phi_samples_tau1 = sample_test_functions(sub_phi, n=n_colloc, d=2, N=N_test_functions, tau=1.0)
         xy_x0, xy_x1, xy_y0, xy_y1 = generate_boundary_points(n_g_boundary, sub_bc)
 
-        # 3. Calibrar tau para equilibrar os dois termos da perda na inicialização (Eq. 6.1)
+        # 3. Calibrar tau
         tau_run = calibrate_tau(params, xy_grid, phi_samples_tau1, xy_x0, xy_x1, xy_y0, xy_y1)
         phi_samples_run = tau_run * phi_samples_tau1
 
-        # 4. Lambda inicial: lambda = L_Phi(theta_0) / L_b(theta_0), ja com tau calibrado
+        # 4. Lambda inicial
         lam = compute_lambda(params, xy_grid, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1)
 
-        # 5. Otimização via L-BFGS, um passo por vez (init_state + update em loop),
-        #    registrando loss e erro L2 a cada passo para a trajetoria de convergencia
+        # 5. Otimização via L-BFGS preservando a continuidade do estado 'state'
         state = lbfgs.init_state(params_flat, phi_samples_run=phi_samples_run,
                                   xy_x0=xy_x0, xy_x1=xy_x1, xy_y0=xy_y0, xy_y1=xy_y1, lam=lam)
 
-        run_l2_traj = []
-        run_loss_traj = []
+        run_l2_traj_segments = []
+        run_loss_traj_segments = []
 
         t_start_lbfgs = time.perf_counter()
-        for step in range(lbfgs_maxiter):
-            if step > 0 and step % segment_iters == 0:
+        
+        for seg in range(n_lambda_updates):
+            # Passa o 'state' preservado do segmento anterior
+            params_flat, state, loss_traj_seg, err_traj_seg = lbfgs_segment_with_trajectory(
+                params_flat, state, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam)
+
+            run_l2_traj_segments.append(np.asarray(err_traj_seg))
+            run_loss_traj_segments.append(np.asarray(loss_traj_seg))
+
+            # Atualiza lambda para o proximo segmento
+            if seg < n_lambda_updates - 1:
                 params = unflatten_fn(params_flat)
                 lam = compute_lambda(params, xy_grid, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1)
 
-            params_flat, state = lbfgs.update(
-                params_flat, state, phi_samples_run=phi_samples_run,
-                xy_x0=xy_x0, xy_x1=xy_x1, xy_y0=xy_y0, xy_y1=xy_y1, lam=lam
-            )
-            run_l2_traj.append(float(state.aux['l2']))
-            run_loss_traj.append(float(state.aux['loss']))
+        run_l2_traj = np.concatenate(run_l2_traj_segments)
+        run_loss_traj = np.concatenate(run_loss_traj_segments)
 
         params = unflatten_fn(params_flat).copy()
         loss_lbfgs = run_loss_traj[-1]
@@ -516,8 +542,7 @@ for arch in architectures:
         print(f"L-BFGS concluído em {t_lbfgs:.2f}s | tau = {float(tau_run):.4e} | "
               f"lambda final = {float(lam):.4e} | Loss: {loss_lbfgs:.8e}")
 
-        # 6. Avaliação nos pontos Ground Truth (u_nn para os pontos salvos ao final;
-        #    o erro L2 final ja' e' o ultimo valor da trajetoria registrada acima)
+        # 6. Avaliação nos pontos Ground Truth
         t_start_eval = time.perf_counter()
         u_nn_flat = forward(xy_points_gt, params)
         u_nn = u_nn_flat.reshape(X_mesh_gt.shape)
@@ -567,7 +592,6 @@ for arch in architectures:
     points = {
         'x_mesh': np.asarray(X_mesh_gt).tolist(),
         'y_mesh': np.asarray(Y_mesh_gt).tolist(),
-        'u_exact': np.asarray(U_true_gt).tolist(),
         'u_nn': U_nn_final.tolist(),
         'network_weights': params_final_flat.tolist()
     }
@@ -576,16 +600,30 @@ for arch in architectures:
     with open(nome_arquivo_pontos, 'w', encoding='utf-8') as f:
         json.dump(points, f, indent=4)
 
-    trajetoria = {
+    # ---------------------------------------------------------
+    # NOVIDADE: Exportação da curva seguindo o mesmo layout (1D)
+    # ---------------------------------------------------------
+    all_loss_trajectories = np.stack(loss_runs, axis=0)         
+    all_l2_error_trajectories = np.stack(l2_error_runs, axis=0) 
+
+    training_curve = {
         'architecture': width,
         'method': 'SV-PINN 2D (L-BFGS)',
-        'steps': list(range(1, lbfgs_maxiter + 1)),   # eixo x: passo do L-BFGS
-        'l2_error_runs': l2_error_runs,                 # shape (num_runs, lbfgs_maxiter)
-        'loss_runs': loss_runs                           # shape (num_runs, lbfgs_maxiter)
+        'n_colloc': n_colloc,
+        'n_test_functions': N_test_functions,
+        'lbfgs_maxiter': lbfgs_maxiter,
+        'num_runs': num_runs,
+        # Registrado a cada 10 passos
+        'steps': list(range(10, lbfgs_maxiter + 1, 10)),
+        'l2_relative_error_per_run': all_l2_error_trajectories.tolist(),
+        'loss_per_run': all_loss_trajectories.tolist(),
+        'l2_relative_error_mean': all_l2_error_trajectories.mean(axis=0).tolist(),
+        'l2_relative_error_std': all_l2_error_trajectories.std(axis=0).tolist(),
     }
 
-    nome_arquivo_trajetoria = f'trajetoria_svpinn_2d_{arch_str}.json'
-    with open(nome_arquivo_trajetoria, 'w', encoding='utf-8') as f:
-        json.dump(trajetoria, f)
+    # Salvo como 'curva_treino_svpinn_2d_*.json' para ser iterado no script gerador do plot
+    nome_arquivo_curva = f'curva_treino_svpinn_2d_{arch_str}.json'
+    with open(nome_arquivo_curva, 'w', encoding='utf-8') as f:
+        json.dump(training_curve, f, indent=4)
 
-    print(f"Dados salvos como: {nome_arquivo}, {nome_arquivo_pontos} e {nome_arquivo_trajetoria}\n")
+    print(f"Dados salvos como: {nome_arquivo}, {nome_arquivo_pontos} e {nome_arquivo_curva}\n")

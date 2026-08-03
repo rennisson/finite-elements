@@ -338,6 +338,8 @@ for arch in architectures:
     acc_train_lbfgs = 0.0
     acc_eval_time = 0.0
     l2_errors = []
+    all_loss_trajectories = []       # (num_runs, lbfgs_maxiter), curva de treino
+    all_l2_error_trajectories = []   # (num_runs, lbfgs_maxiter), curva de treino
  
     Y_nn_final = None
     params_final_flat = None
@@ -368,6 +370,26 @@ for arch in architectures:
     # entao o L-BFGS roda em segmentos menores em vez de um unico run de lbfgs_maxiter passos
     segment_iters = max(1, lbfgs_maxiter // n_lambda_updates)
     lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=segment_iters, history_size=50, tol=1e-12)
+
+    # Mesma otimizacao de um segmento que `lbfgs.run` fazia, mas passo-a-passo
+    # (lbfgs.init_state + lbfgs.update via jax.lax.scan) para registrar a
+    # trajetoria do loss e do erro L2 relativo (contra X_test/Y_test) a cada
+    # passo, necessaria para o plot da curva de treinamento.
+    @jax.jit
+    def lbfgs_segment_with_trajectory(p_flat, phi_samples_run, lam):
+        init_state = lbfgs.init_state(p_flat, phi_samples_run=phi_samples_run, lam=lam)
+
+        def step_fn(carry, _):
+            p, state = carry
+            p, state = lbfgs.update(p, state, phi_samples_run=phi_samples_run, lam=lam)
+            params_ = unflatten_fn(p)
+            Y_nn_step = forward(X_test, params_)
+            l2_err = jnp.linalg.norm(Y_nn_step - Y_test) / jnp.linalg.norm(Y_test)
+            return (p, state), (state.value, l2_err)
+
+        (p_final, state_final), (loss_traj, err_traj) = jax.lax.scan(
+            step_fn, (p_flat, init_state), xs=None, length=segment_iters)
+        return p_final, state_final, loss_traj, err_traj
  
     for run in range(num_runs):
         print(f"\n--- Run {run + 1}/{num_runs} ---")
@@ -392,13 +414,23 @@ for arch in architectures:
  
         # 4. Otimização via L-BFGS em segmentos, recalculando lambda entre eles
         t_start_lbfgs = time.perf_counter()
+        loss_traj_segments = []
+        err_traj_segments = []
         for seg in range(n_lambda_updates):
-            params_flat, state = lbfgs.run(params_flat, phi_samples_run=phi_samples_run, lam=lam)
+            params_flat, state, loss_traj_seg, err_traj_seg = lbfgs_segment_with_trajectory(
+                params_flat, phi_samples_run, lam)
+            loss_traj_segments.append(np.asarray(loss_traj_seg))
+            err_traj_segments.append(np.asarray(err_traj_seg))
             params = unflatten_fn(params_flat)
             lam = compute_lambda(params, x_grid, phi_samples_run)  # atualiza lambda com os params atuais
         params = params.copy()
         loss_lbfgs = objective_lbfgs(params_flat, phi_samples_run, lam).block_until_ready()
         t_lbfgs = time.perf_counter() - t_start_lbfgs
+
+        loss_trajectory_run = np.concatenate(loss_traj_segments)       # (lbfgs_maxiter,)
+        l2_error_trajectory_run = np.concatenate(err_traj_segments)    # (lbfgs_maxiter,)
+        all_loss_trajectories.append(loss_trajectory_run)
+        all_l2_error_trajectories.append(l2_error_trajectory_run)
  
         acc_train_lbfgs += t_lbfgs
         print(f"L-BFGS concluído em {t_lbfgs:.2f}s | lambda final = {float(lam):.4e} | Loss: {loss_lbfgs:.8e}")
@@ -460,6 +492,28 @@ for arch in architectures:
     nome_arquivo = f'pontos_svpinn_1d_{arch_str}.json'
     with open(nome_arquivo, 'w') as f:
         json.dump(points, f, indent=4)
- 
+
+    # Curva de treinamento: erro L2 relativo e loss a cada passo de L-BFGS,
+    # para cada uma das `num_runs` execucoes.
+    all_loss_trajectories = np.stack(all_loss_trajectories, axis=0)        # (num_runs, lbfgs_maxiter)
+    all_l2_error_trajectories = np.stack(all_l2_error_trajectories, axis=0)
+
+    training_curve = {
+        'architecture': width,
+        'method': 'SV-PINN (L-BFGS)',
+        'n_colloc': n_colloc,
+        'n_test_functions': N_test_functions,
+        'lbfgs_maxiter': lbfgs_maxiter,
+        'num_runs': num_runs,
+        'steps': list(range(1, lbfgs_maxiter + 1)),
+        'l2_relative_error_per_run': all_l2_error_trajectories.tolist(),
+        'loss_per_run': all_loss_trajectories.tolist(),
+        'l2_relative_error_mean': all_l2_error_trajectories.mean(axis=0).tolist(),
+        'l2_relative_error_std': all_l2_error_trajectories.std(axis=0).tolist(),
+    }
+
+    nome_arquivo = f'curva_treino_svpinn_1d_{arch_str}.json'
+    with open(nome_arquivo, 'w') as f:
+        json.dump(training_curve, f, indent=4)
+
     print(f"Dados salvos como: {nome_arquivo}\n")
- 

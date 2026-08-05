@@ -112,7 +112,9 @@ def sv_pinn_norm_squared(residual, phi_samples):
 def daff_encoding(x, n_daff):
     """x: (batch, 1) -> (batch, n_daff)."""
     k = jnp.arange(1, n_daff + 1, dtype=x.dtype)
-    return jnp.sqrt(2.0) * jnp.sin(jnp.pi * k * x)
+    phi = jnp.sqrt(2.0) * jnp.sin(jnp.pi * k * x)
+    on_boundary = (x == 0.0) | (x == 1.0)
+    return jnp.where(on_boundary, 0.0, phi)
 
 
 # ==========================================
@@ -164,11 +166,10 @@ def modified_mlp_forward(x, params):
     U = activation_function(g0 @ params['W1'])
     V = activation_function(g0 @ params['W2'])
 
-    g = g0
     for W in params['hidden']:
-        f = activation_function(g @ W)
-        g = f * U + (1.0 - f) * V
-    return g @ params['Wout']
+        f = activation_function(g0 @ W)
+        g0 = f * U + (1.0 - f) * V
+    return g0 @ params['Wout']
 
 
 # ==========================================
@@ -195,10 +196,13 @@ def residual_interior(params, x_grid, rhs_fn):
 #    jax.lax.scan sobre lbfgs.update, necessaria para o painel (b) da
 #    Figura 2 (L2 relative error vs Steps).
 # ==========================================
-def train_sv_pinn(a, key, n_daff=64, width=512, depth=3,
-                   n_colloc=1024, n_test_functions=25000, tau=0.1,
-                   lbfgs_maxiter=5000, tol=1e-9, history_size=200,
-                   n_test_eval=2048):
+def train_sv_pinn(
+        a, key,
+        n_daff=64, width=512, depth=3,
+        n_colloc=1024, n_test_functions=25000, tau=0.1,
+        lbfgs_maxiter=5000, tol=1e-9, history_size=200,
+        n_test_eval=2048
+    ):
     u_exact, rhs_fn = make_problem(a)
 
     x_grid = grid_points(n_colloc, d=1)[:, 0]
@@ -218,8 +222,11 @@ def train_sv_pinn(a, key, n_daff=64, width=512, depth=3,
         R = residual_interior(params_, x_grid, rhs_fn)
         return sv_pinn_norm_squared(R, phi_samples)
 
-    lbfgs = jaxopt.LBFGS(fun=objective, maxiter=lbfgs_maxiter,
-                          history_size=history_size, tol=tol)
+    lbfgs = jaxopt.LBFGS(
+        fun=objective, maxiter=lbfgs_maxiter,
+        history_size=history_size, tol=tol
+    )
+
     init_state = lbfgs.init_state(params_flat)
 
     def step_fn(carry, _):
@@ -288,7 +295,8 @@ if __name__ == "__main__":
         for run in range(num_runs):
             run_key = random.fold_in(main_key, hash((a, run)) % (2 ** 31))
             out = train_sv_pinn(
-                a, run_key, n_daff=n_daff, width=width, depth=depth,
+                a, run_key, 
+                n_daff=n_daff, width=width, depth=depth,
                 n_colloc=n_colloc, n_test_functions=n_test_functions, tau=tau,
                 lbfgs_maxiter=lbfgs_maxiter, n_test_eval=n_test_eval,
             )

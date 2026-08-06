@@ -112,9 +112,7 @@ def sv_pinn_norm_squared(residual, phi_samples):
 def daff_encoding(x, n_daff):
     """x: (batch, 1) -> (batch, n_daff)."""
     k = jnp.arange(1, n_daff + 1, dtype=x.dtype)
-    phi = jnp.sqrt(2.0) * jnp.sin(jnp.pi * k * x)
-    on_boundary = (x == 0.0) | (x == 1.0)
-    return jnp.where(on_boundary, 0.0, phi)
+    return jnp.sqrt(2.0) * jnp.sin(jnp.pi * k * x)
 
 
 # ==========================================
@@ -189,6 +187,23 @@ def residual_interior(params, x_grid, rhs_fn):
     return u_xx - rhs_fn(x_grid)
 
 
+def residual_interior_shifted(params, n, rhs_fn):
+    """Variante da loss usada nos Experimentos 1-6 (Apendice A): o residuo
+    e' avaliado em x_i = i/n, i = 0, ..., n-1, enquanto as funcoes teste
+    permanecem no grid k/(n+1), k = 1, ..., n (DST-I). Esse deslocamento
+    (incluindo x=0) introduz uma pequena perturbacao de quadratura que o
+    paper reporta como regularizacao implicita benefica em alguns casos.
+    """
+    x_grid_shifted = jnp.arange(0, n, dtype=jnp.float64) / n
+
+    def u_net(x_val):
+        x_v = x_val.reshape(1, 1)
+        return modified_mlp_forward(x_v, params)[0, 0]
+
+    u_xx = jax.vmap(laplacian_1d(u_net))(x_grid_shifted)
+    return u_xx - rhs_fn(x_grid_shifted)
+
+
 # ==========================================
 # 6. TREINAMENTO DO SV-PINN (L-BFGS), Sec. 4.4, sem termo de contorno
 #    (lambda = 0, condicao de contorno imposta de forma hard pela DAFF).
@@ -201,7 +216,7 @@ def train_sv_pinn(
         n_daff=64, width=512, depth=3,
         n_colloc=1024, n_test_functions=25000, tau=0.1,
         lbfgs_maxiter=5000, tol=1e-9, history_size=200,
-        n_test_eval=2048
+        n_test_eval=2048, shifted_quadrature=False
     ):
     u_exact, rhs_fn = make_problem(a)
 
@@ -219,7 +234,10 @@ def train_sv_pinn(
 
     def objective(p_flat):
         params_ = unflatten_fn(p_flat)
-        R = residual_interior(params_, x_grid, rhs_fn)
+        if shifted_quadrature:
+            R = residual_interior_shifted(params_, n_colloc, rhs_fn)
+        else:
+            R = residual_interior(params_, x_grid, rhs_fn)
         return sv_pinn_norm_squared(R, phi_samples)
 
     lbfgs = jaxopt.LBFGS(

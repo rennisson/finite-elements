@@ -28,6 +28,7 @@ import time
 from jax import random, config
 
 config.update("jax_enable_x64", True)
+config.update("jax_default_matmul_precision", "highest")
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 activation_function = jnp.tanh
@@ -36,9 +37,21 @@ activation_function = jnp.tanh
 # 0. PROBLEMA: Poisson multi-escala 1D (Eq. 6.3)
 # ==========================================
 def make_problem(a):
-    """Retorna (u_exata, rhs) para o parametro de frequencia a (Eq. 6.3)."""
+    """Retorna (u_exata, rhs) para o parametro de frequencia a (Eq. 6.3).
+
+    u_exact inclui um termo linear de correcao, -x*(sin(2 pi) + 0.1 sin(a pi)),
+    que cancela o residuo de ponto flutuante de sin(a*pi) em x=1 (sin(a*pi) so'
+    e' exatamente 0.0 em aritmetica exata, nao em float64). Sem essa correcao,
+    a propria referencia usada no calculo do erro L2 carrega um residuo
+    espurio em x=1, o que infla artificialmente o erro pontual perto da
+    fronteira mesmo quando a rede (com DAFF, hard-constrained) e' exatamente
+    zero ali.
+    """
+    boundary_correction = jnp.sin(2 * jnp.pi) + 0.1 * jnp.sin(a * jnp.pi)
+
     def u_exact(x):
-        return jnp.sin(2 * jnp.pi * x) + 0.1 * jnp.sin(a * jnp.pi * x)
+        return (jnp.sin(2 * jnp.pi * x) + 0.1 * jnp.sin(a * jnp.pi * x)
+                - x * boundary_correction)
 
     def rhs(x):
         return (-4 * jnp.pi ** 2 * jnp.sin(2 * jnp.pi * x)

@@ -33,6 +33,7 @@ import time
 from jax import random, config
  
 config.update("jax_enable_x64", True)
+config.update("jax_default_matmul_precision", "highest")
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
  
 activation_function = jax.nn.tanh
@@ -297,9 +298,7 @@ def boundary_residual(params):
 #    recalculado periodicamente ao longo do treinamento, acompanhando theta)
 # ==========================================
 def compute_lambda(params, x_grid, phi_samples, eps=1e-10):
-    """eps evita divisao por L_b quase-zero (observado a levar lambda a
-    explodir e o treinamento a divergir quando o contorno ja' esta' bem
-    ajustado mas o interior ainda nao)."""
+    """eps evita divisao por L_b quase-zero"""
     R = residual_interior(params, x_grid)
     L_phi = sv_pinn_norm_squared(R, phi_samples)
     L_b = jnp.mean(boundary_residual(params) ** 2)
@@ -320,7 +319,6 @@ N_test_functions = 25000   # numero de funcoes teste amostradas (Table A.8, caso
 num_runs = 3               # 3 repeticoes, como no protocolo experimental do paper (Sec. 6)
 lbfgs_maxiter = 5000       # SV-PINNs treinadas por L-BFGS por 5,000 passos (Sec. 6)
 tau = 1.0                  # escala fixa de Phi; o equilibrio dos termos da perda e feito via lambda
-n_lambda_updates = 5       # numero de vezes que lambda e recalculado durante o treinamento
  
 main_key = jax.random.PRNGKey(42)
  
@@ -355,10 +353,7 @@ for arch in architectures:
  
     @jax.jit
     def objective_lbfgs(p_flat, phi_samples_run, lam):
-        # nao usa sv_pinn_loss diretamente aqui pois seu "if lam == 0.0"
-        # e' um teste em Python puro, incompativel com um lam rastreado (traced)
-        # pelo jit/L-BFGS quando ele varia a cada segmento; o calculo abaixo
-        # e' a mesma Eq. (4.5), so' que sem esse desvio condicional.
+        # Eq. (4.5)
         params = unflatten_fn(p_flat)
         R = residual_interior(params, x_grid)
         Rb = boundary_residual(params)
@@ -366,22 +361,19 @@ for arch in architectures:
         L_b = jnp.mean(Rb ** 2)
         return L_phi + lam * L_b
  
-    # lambda e' recalculado a cada 'segment_iters' passos (ver loop de treino abaixo),
-    # entao o L-BFGS roda em segmentos menores em vez de um unico run de lbfgs_maxiter passos
-    segment_iters = max(1, lbfgs_maxiter // n_lambda_updates)
-    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=segment_iters, history_size=50, tol=1e-12)
+    # lambda e' fixado no inicio de cada run (lambda = L_Phi(theta_0) / L_b(theta_0))
+    # e mantido constante durante todo o treinamento; o L-BFGS roda uma unica vez
+    # por lbfgs_maxiter passos (sem recalibracao de lambda).
+    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=lbfgs_maxiter, history_size=200, tol=1e-12)
 
-    # Mesma otimizacao de um segmento que `lbfgs.run` fazia, mas passo-a-passo
-    # (lbfgs.init_state + lbfgs.update via jax.lax.scan) para registrar a
-    # trajetoria do loss e do erro L2 relativo (contra X_test/Y_test) a cada
-    # 10 passos, necessaria para o plot da curva de treinamento.
+    # Captura o erro L2 a cada 10 passos.
     @jax.jit
     def lbfgs_segment_with_trajectory(p_flat, phi_samples_run, lam):
         init_state = lbfgs.init_state(p_flat, phi_samples_run=phi_samples_run, lam=lam)
         
         eval_freq = 10
         # Reduz o tamanho do scan para iterar sobre blocos de passos
-        num_blocks = segment_iters // eval_freq
+        num_blocks = lbfgs_maxiter // eval_freq
 
         def block_fn(carry, _):
             p, state = carry
@@ -424,31 +416,27 @@ for arch in architectures:
         run_key, sub = jax.random.split(run_key)
         phi_samples_run = sample_test_functions(sub, n=n_colloc, d=1, N=N_test_functions, tau=tau)
  
-        # 3. Lambda inicial: lambda = L_Phi(theta_0) / L_b(theta_0)
+        # 3. Lambda fixo: lambda = L_Phi(theta_0) / L_b(theta_0), calculado uma unica
+        #    vez a partir dos parametros iniciais e mantido constante durante o treino.
         lam = compute_lambda(params, x_grid, phi_samples_run)
  
-        # 4. Otimização via L-BFGS em segmentos, recalculando lambda entre eles
+        # 4. Otimização via L-BFGS, de uma unica vez, por lbfgs_maxiter passos (lambda fixo)
         t_start_lbfgs = time.perf_counter()
-        loss_traj_segments = []
-        err_traj_segments = []
-        for seg in range(n_lambda_updates):
-            params_flat, state, loss_traj_seg, err_traj_seg = lbfgs_segment_with_trajectory(
-                params_flat, phi_samples_run, lam)
-            loss_traj_segments.append(np.asarray(loss_traj_seg))
-            err_traj_segments.append(np.asarray(err_traj_seg))
-            params = unflatten_fn(params_flat)
-            lam = compute_lambda(params, x_grid, phi_samples_run)  # atualiza lambda com os params atuais
-        params = params.copy()
+        params_flat, state, loss_traj_run, err_traj_run = lbfgs_segment_with_trajectory(
+            params_flat, phi_samples_run, lam
+        )
+        params = unflatten_fn(params_flat)
+
         loss_lbfgs = objective_lbfgs(params_flat, phi_samples_run, lam).block_until_ready()
         t_lbfgs = time.perf_counter() - t_start_lbfgs
 
-        loss_trajectory_run = np.concatenate(loss_traj_segments)       # (lbfgs_maxiter,)
-        l2_error_trajectory_run = np.concatenate(err_traj_segments)    # (lbfgs_maxiter,)
+        loss_trajectory_run = np.asarray(loss_traj_run)       # (lbfgs_maxiter // eval_freq,)
+        l2_error_trajectory_run = np.asarray(err_traj_run)
         all_loss_trajectories.append(loss_trajectory_run)
         all_l2_error_trajectories.append(l2_error_trajectory_run)
  
         acc_train_lbfgs += t_lbfgs
-        print(f"L-BFGS concluído em {t_lbfgs:.2f}s | lambda final = {float(lam):.4e} | Loss: {loss_lbfgs:.8e}")
+        print(f"L-BFGS concluído em {t_lbfgs:.2f}s | lambda (fixo) = {float(lam):.4e} | Loss: {loss_lbfgs:.8e}")
  
         # 5. Avaliação nos pontos Ground Truth
         t_start_eval = time.perf_counter()

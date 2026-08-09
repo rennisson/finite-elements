@@ -403,7 +403,6 @@ N_test_functions = 25000    # numero de funcoes teste amostradas (Table A.8, cas
 n_g_boundary = 250          # pontos de contorno por aresta (N_g de pinn_poisson_2d.py)
 num_runs = 3                 # 3 repeticoes, como no protocolo experimental do paper (Sec. 6)
 lbfgs_maxiter = 5000          # SV-PINNs treinadas por L-BFGS por 5,000 passos (Sec. 6)
-n_lambda_updates = 5           # numero de vezes que lambda e recalculado durante o treinamento
 
 main_key = jax.random.PRNGKey(42)
 
@@ -443,19 +442,20 @@ for arch in architectures:
         L_b = jnp.mean(Rb ** 2)
         return L_phi + lam * L_b
 
-    segment_iters = max(1, lbfgs_maxiter // n_lambda_updates)
-    
-    # maxiter definido para segment_iters; has_aux removido
-    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=segment_iters,
+    # lambda e' fixado no inicio de cada run (lambda = L_Phi(theta_0) / L_b(theta_0))
+    # e mantido constante durante todo o treinamento; o L-BFGS roda uma unica vez
+    # por lbfgs_maxiter passos (sem recalibracao de lambda).
+    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=lbfgs_maxiter,
                           history_size=50, tol=1e-12)
 
     # ---------------------------------------------------------
-    # NOVIDADE: Segmento JIT-compilado para rodar o L-BFGS em blocos
+    # Roda o L-BFGS em blocos apenas para registrar a trajetoria (erro L2 a
+    # cada 10 passos); lambda permanece fixo em todos os blocos.
     # ---------------------------------------------------------
     @jax.jit
     def lbfgs_segment_with_trajectory(p_flat, state, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam):
         eval_freq = 10
-        num_blocks = segment_iters // eval_freq
+        num_blocks = lbfgs_maxiter // eval_freq
 
         def block_fn(carry, _):
             p, s = carry
@@ -503,35 +503,22 @@ for arch in architectures:
         tau_run = calibrate_tau(params, xy_grid, phi_samples_tau1, xy_x0, xy_x1, xy_y0, xy_y1)
         phi_samples_run = tau_run * phi_samples_tau1
 
-        # 4. Lambda inicial
+        # 4. Lambda fixo: lambda = L_Phi(theta_0) / L_b(theta_0), calculado uma unica
+        #    vez a partir dos parametros iniciais e mantido constante durante o treino.
         lam = compute_lambda(params, xy_grid, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1)
 
-        # 5. Otimização via L-BFGS preservando a continuidade do estado 'state'
+        # 5. Otimização via L-BFGS, de uma unica vez, por lbfgs_maxiter passos (lambda fixo)
         state = lbfgs.init_state(params_flat, phi_samples_run=phi_samples_run,
                                   xy_x0=xy_x0, xy_x1=xy_x1, xy_y0=xy_y0, xy_y1=xy_y1, lam=lam)
 
-        run_l2_traj_segments = []
-        run_loss_traj_segments = []
-
         t_start_lbfgs = time.perf_counter()
-        
-        for seg in range(n_lambda_updates):
-            # Passa o 'state' preservado do segmento anterior
-            params_flat, state, loss_traj_seg, err_traj_seg = lbfgs_segment_with_trajectory(
-                params_flat, state, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam)
 
-            run_l2_traj_segments.append(np.asarray(err_traj_seg))
-            run_loss_traj_segments.append(np.asarray(loss_traj_seg))
+        params_flat, state, run_loss_traj, run_l2_traj = lbfgs_segment_with_trajectory(
+            params_flat, state, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam)
+        run_loss_traj = np.asarray(run_loss_traj)
+        run_l2_traj = np.asarray(run_l2_traj)
 
-            # Atualiza lambda para o proximo segmento
-            if seg < n_lambda_updates - 1:
-                params = unflatten_fn(params_flat)
-                lam = compute_lambda(params, xy_grid, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1)
-
-        run_l2_traj = np.concatenate(run_l2_traj_segments)
-        run_loss_traj = np.concatenate(run_loss_traj_segments)
-
-        params = unflatten_fn(params_flat).copy()
+        params = unflatten_fn(params_flat)
         loss_lbfgs = run_loss_traj[-1]
         t_lbfgs = time.perf_counter() - t_start_lbfgs
 
@@ -540,7 +527,7 @@ for arch in architectures:
 
         acc_train_lbfgs += t_lbfgs
         print(f"L-BFGS concluído em {t_lbfgs:.2f}s | tau = {float(tau_run):.4e} | "
-              f"lambda final = {float(lam):.4e} | Loss: {loss_lbfgs:.8e}")
+              f"lambda (fixo) = {float(lam):.4e} | Loss: {loss_lbfgs:.8e}")
 
         # 6. Avaliação nos pontos Ground Truth
         t_start_eval = time.perf_counter()

@@ -42,6 +42,13 @@ mapeada para (0,1). Ativacao da rede: tanh (Secao 5, "Shallow to Deep
 VPINNs" -- redes profundas exigem quadratura numerica, sem forma
 fechada).
 
+O erro L2 relativo (avaliacao e curva de treino) e calculado contra o
+ground truth gerado por `ground_truth_poisson_1d.py` (arquivo
+GT_JSON_PATH, campos "X" e "U_true"), nao contra u_exact avaliada
+diretamente em um novo grid. `u_exact_fn` continua sendo usada apenas
+para obter f(x) por autodiff (metodo das solucoes fabricadas) e os
+valores de contorno g, h.
+
 Saidas (mesmo padrao de vpinn_1d_poisson.py):
     - dados_vpinn_1d_<tag>.json          -> resumo (erro L2, tempos, etc.)
     - pontos_vpinn_1d_<tag>.json         -> predicao final da rede + pesos
@@ -75,6 +82,8 @@ LEARNING_RATE = 1e-3
 TAU_VPINN = 10.0
 
 X_LEFT, X_RIGHT = 0.0, 1.0
+
+GT_JSON_PATH = "gt_poisson_1d.json"  # gerado por ground_truth_poisson_1d.py
 
 main_key = random.PRNGKey(42)
 
@@ -282,10 +291,24 @@ def train_adam(params, loss_fn, num_steps, eval_freq, lr, X_test, Y_test):
 
 
 # ==========================================
-# 7. LOOP PRINCIPAL DE EXPERIMENTOS
+# 7. GROUND TRUTH (ground_truth_poisson_1d.py) E LOOP PRINCIPAL
 # ==========================================
-X_TEST = jnp.linspace(X_LEFT, X_RIGHT, 1000, dtype=jnp.float64).reshape(-1, 1)
-Y_TEST = jax.vmap(u_exact_fn)(X_TEST[:, 0]).reshape(-1, 1)
+def load_ground_truth(path):
+    """Carrega X e U_true gerados por ground_truth_poisson_1d.py e usados
+    como referencia para o erro L2 relativo (avaliacao e curva de treino)."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Ground truth '{path}' nao encontrado. Rode "
+            f"ground_truth_poisson_1d.py antes deste script."
+        )
+    with open(path, "r", encoding="utf-8") as f_gt:
+        gt_data = json.load(f_gt)
+    X = jnp.asarray(gt_data["X"], dtype=jnp.float64)
+    U_true = jnp.asarray(gt_data["U_true"], dtype=jnp.float64)
+    return X, U_true
+
+
+X_TEST, Y_TEST = load_ground_truth(GT_JSON_PATH)
 
 f_fn = make_force_term(u_exact_fn)
 g = float(u_exact_fn(jnp.asarray(X_LEFT)))

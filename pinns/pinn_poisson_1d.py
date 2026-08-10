@@ -41,8 +41,8 @@ with open(gt_file, "r") as f_in:
     gt_data = json.load(f_in)
 
 # Assegurar que os arrays estão no formato de coluna, como esperado pela PINN
-X_test = jnp.array(gt_data['x_eval']).reshape(-1, 1)
-Y_test = jnp.array(gt_data['u_eval']).reshape(-1, 1)
+X_test = jnp.array(gt_data['X']).reshape(-1, 1)
+Y_test = jnp.array(gt_data['U_true']).reshape(-1, 1)
 
 print(f"Ground truth carregado com {X_test.shape[0]} pontos.")
 

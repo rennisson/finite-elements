@@ -1,72 +1,48 @@
 # -*- coding: utf-8 -*-
 """
-vpinn_1d_poisson.py
+vpinn_1d_poisson_unit_interval.py
 
-Implementacao de VPINNs (Variational Physics-Informed Neural Networks) para a
-equacao de Poisson 1D, seguindo Kharazmi, Zhang & Karniadakis (2019),
-"VPINNs: Variational Physics-Informed Neural Networks for Solving PDEs".
+VPINN (Variational Physics-Informed Neural Network) para o problema de
+Poisson 1D do Cap. 4.1 do TCC (analogo ao Example 5.1 de Kharazmi, Zhang
+& Karniadakis 2019, mas em (0,1) em vez de (-1,1)):
 
-Problema (Secao 4/5 do artigo, eq. 4.23):
+    u''(x) = (4x^3 - 6x) exp(-x^2),  x in (0, 1)
+    u(0) = 0
+    u(1) = exp(-1)
 
-    -u''(x) = f(x),  x in (-1, 1)
-    u(-1) = g,  u(1) = h
+Solucao analitica: u_exact(x) = x exp(-x^2).
 
-Formulacao variacional (Petrov-Galerkin): multiplicamos por uma funcao teste
-v(x) com suporte compacto em (-1,1) e integramos por partes. Como v_k(+-1)=0,
-o termo de contorno desaparece (Remark 4.1) e obtemos duas formas equivalentes
-do residuo variacional (eq. 4.6-4.7):
+Diferencas em relacao a vpinn_1d_poisson.py (Example 5.1, dominio (-1,1)):
+    - o dominio fisico e (0,1), nao (-1,1);
+    - a equacao e u''(x) = f(x) (sem o sinal negativo de -u''=f), o que
+      inverte o sinal dos residuos variacionais R^(1) e R^(2) em relacao
+      ao script de referencia.
 
-    R_k^(1) = -(u_xx, v_k)_Omega           (nenhuma integracao por partes)
-    R_k^(2) =  (u_x, v_k')_Omega            (uma integracao por partes)
+As funcoes teste de Legendre (eq. 4.20 do artigo) sao definidas no
+dominio de referencia xi in (-1,1), onde vivem naturalmente
+(v_k(+-1)=0), e mapeadas para o dominio fisico x in (0,1) via a
+transformacao afim
 
-com F_k = (f, v_k)_Omega e perda variacional (eq. 4.25):
+    x = (xi + 1) / 2,  dx = (1/2) dxi,  dxi/dx = 2.
+
+Formulacao variacional (multiplica-se a EDO por v_k e integra-se em
+(0,1)); como v_k(0) = v_k(1) = 0, o termo de contorno da integracao por
+partes desaparece:
+
+    R_k^(1) =  (u_xx, v_k)_(0,1)            (sem IBP)
+    R_k^(2) = -(u_x,  v_k')_(0,1)           (uma IBP)
+    F_k     =  (f, v_k)_(0,1)
 
     L_R = (1/K) sum_k (R_k - F_k)^2
-    L_b = (tau/2) [ (u_NN(-1)-g)^2 + (u_NN(1)-h)^2 ]
-    L   = L_R + L_b
+    L_b = (1/2) [ (u_NN(0)-g)^2 + (u_NN(1)-h)^2 ]
+    L   = L_R + tau * L_b
 
-Como no artigo (Secao 5, "Shallow to Deep VPINNs"), como a rede pode ser
-profunda, as integrais nao tem forma fechada e sao aproximadas por quadratura
-de Gauss-Legendre (equivalente a Gauss-Jacobi com alpha=beta=0), usando os
-pontos/pesos {x_q, W_q} (eq. da Secao 5):
+Integrais aproximadas por quadratura de Gauss-Legendre em (-1,1),
+mapeada para (0,1). Ativacao da rede: tanh (Secao 5, "Shallow to Deep
+VPINNs" -- redes profundas exigem quadratura numerica, sem forma
+fechada).
 
-    R_k^(1) ~= -sum_q W_q u_xx(x_q) v_k(x_q)
-    R_k^(2) ~=  sum_q W_q u_x(x_q)  v_k'(x_q)
-
-As funcoes teste sao polinomios de Legendre deslocados (eq. 4.20):
-
-    v_k(x) = P_{k+1}(x) - P_{k-1}(x),  k = 1, ..., K
-
-que satisfazem v_k(-1) = v_k(1) = 0. Em vez de usar as formulas de recursao
-fechadas do Apendice B (validas apenas para redes rasas com ativacao seno),
-calculamos v_k e v_k' via a mesma recursao de Legendre + autodiff do JAX, o
-que funciona para qualquer arquitetura de rede (rasa ou profunda) e qualquer
-funcao de ativacao -- exatamente o cenario "Shallow to Deep VPINNs" da
-Secao 5.
-
-Os exemplos de solucao exata (Example 5.1) sao:
-    - 'steep':          u_exact(x) = 0.1 sin(4 pi x) + tanh(5x)
-    - 'boundary_layer':  u_exact(x) = 0.1 sin(4 pi x) + exp((0.01-(x+1))/0.01)
-
-O termo de forcamento f(x) = -u_exact''(x) e obtido automaticamente via
-autodiff (metodo das solucoes fabricadas), sem necessidade de deriva-lo a mao.
-
-NOTA (condicionamento numerico do caso 'boundary_layer'): a solucao exata
-'boundary_layer' tem uma camada de largura ~0.01 perto de x=-1, o que faz
-f(x) = -u_exact''(x) atingir magnitude ~1e4 ali (contra ~15 no resto do
-dominio). Sem cuidado extra, isso desestabiliza o treinamento de duas formas:
-(1) as funcoes teste de Legendre nao-normalizadas tem norma/derivada
-crescente com k, entao os residuos de indice k alto dominam a perda MSE
-sobre todos os k; (2) uma quadratura Gauss-Legendre global nao concentra
-pontos o suficiente perto do pico. Por isso: (a) as funcoes teste sao
-normalizadas para norma L2 unitaria (legendre_test_function_norms), (b) o
-caso 'boundary_layer' usa quadratura composta/graduada concentrada perto de
-x=-1 (quadrature_for_solution / composite_gauss_legendre), e (c) o Adam usa
-clipping de gradiente por norma global (clip_grads_by_global_norm) como
-protecao extra contra picos residuais.
-
-Convencoes de codigo e formato dos arquivos de saida (JSON) seguem o script
-de referencia `1d_poisson.py`:
+Saidas (mesmo padrao de vpinn_1d_poisson.py):
     - dados_vpinn_1d_<tag>.json          -> resumo (erro L2, tempos, etc.)
     - pontos_vpinn_1d_<tag>.json         -> predicao final da rede + pesos
     - curva_treino_vpinn_1d_<tag>.json   -> trajetoria de loss / erro L2
@@ -95,201 +71,101 @@ ACTIVATIONS = {
     "sine": jnp.sin,
 }
 
-# ==========================================
-# 0. CHAVE DE EXECUCAO RAPIDA (SANITY CHECK)
-# ==========================================
-# O artigo usa K=60 funcoes teste, Q=100 pontos de quadratura, 50000 passos
-# de Adam e 5 repeticoes por caso (Fig. 9-10). Isso e caro (varias horas).
-# QUICK_TEST=True roda uma versao muito reduzida so para validar que o
-# pipeline (formas, treino, salvamento dos JSONs) funciona de ponta a ponta.
-# Depois de validar, mude para False para reproduzir a escala do artigo.
-QUICK_TEST = True
+K_TEST_FUNCTIONS = 60
+Q_QUADRATURE = 100
+NUM_STEPS = 50000
+EVAL_FREQ = 50
+NUM_RUNS = 5
+HIDDEN_LAYER_CONFIGS = [1, 2]
 
-if QUICK_TEST:
-    K_TEST_FUNCTIONS = 10
-    Q_QUADRATURE = 30
-    NUM_STEPS = 2000
-    EVAL_FREQ = 20
-    NUM_RUNS = 2
-    HIDDEN_LAYER_CONFIGS = [1, 2]     # numero de camadas escondidas (L)
-else:
-    K_TEST_FUNCTIONS = 60
-    Q_QUADRATURE = 100
-    NUM_STEPS = 50000
-    EVAL_FREQ = 50
-    NUM_RUNS = 5
-    HIDDEN_LAYER_CONFIGS = [1, 2]
+NEURONS_PER_LAYER = 20
+LEARNING_RATE = 1e-3
+TAU_VPINN = 10.0
 
-NEURONS_PER_LAYER = 20   # N=20 neuronios por camada, como na Tabela do Ex. 5.1
-LEARNING_RATE = 1e-3     # Adam, lr = 1e-3 (Tabela 1/2 do artigo)
-CLIP_NORM = 5.0          # limite da norma global do gradiente (ver clip_grads_by_global_norm)
-
-# Quais ativacoes rodar. O padrao ["tanh"] preserva exatamente o
-# comportamento/tags anteriores. Adicione "sine" para tambem treinar com
-# ativacao seno (mantido separado por padrao pois dobra o tempo total de
-# execucao). Tags com ativacao != "tanh" recebem um sufixo (ex. "..._sine"),
-# entao os JSONs de tanh existentes nao sao sobrescritos nem renomeados.
-ACTIVATIONS_TO_RUN = ["tanh"]
-
-# Faixa de inicializacao dos "pesos-frequencia" da 1a camada quando a rede
-# usa ativacao seno (ver discussao logo abaixo de init_mlp_params). As
-# solucoes exatas do Example 5.1 tem componente sin(4*pi*x), ou seja,
-# frequencia alvo ~12.6 -- por isso alargamos a faixa bem alem do que o
-# Glorot normal (~std=1) daria.
-SINE_FREQ_SCALE = 15.0
-
-# tau (parametro de penalidade de contorno) por caso, como nas legendas das
-# Fig. 9-10 do artigo.
-TAU_VPINN = {"steep": 25.0, "boundary_layer": 10.0}
+X_LEFT, X_RIGHT = 0.0, 1.0
 
 main_key = random.PRNGKey(42)
 
 
 # ==========================================
-# 1. SOLUCOES EXATAS (METODO DAS SOLUCOES FABRICADAS, Example 5.1)
+# 1. SOLUCAO EXATA E TERMO DE FORCAMENTO (eq. 5 do TCC)
 # ==========================================
-def u_exact_steep(x):
-    """u_exact(x) = 0.1 sin(4 pi x) + tanh(5x)  (eq. 5.1)"""
-    return 0.1 * jnp.sin(4 * jnp.pi * x) + jnp.tanh(5.0 * x)
-
-
-def u_exact_boundary_layer(x):
-    """u_exact(x) = 0.1 sin(4 pi x) + exp((0.01-(x+1))/0.01)  (eq. 5.2)"""
-    return 0.1 * jnp.sin(4 * jnp.pi * x) + jnp.exp((0.01 - (x + 1.0)) / 0.01)
-
-
-EXACT_SOLUTIONS = {
-    "steep": u_exact_steep,
-    "boundary_layer": u_exact_boundary_layer,
-}
+def u_exact_fn(x):
+    """u_exact(x) = x exp(-x^2)."""
+    return x * jnp.exp(-x ** 2)
 
 
 def make_force_term(u_exact_fn):
-    """f(x) = -u_exact''(x), via diferenciacao automatica (2x jax.grad)."""
+    """f(x) = u_exact''(x), via diferenciacao automatica (2x jax.grad).
+    Observe o sinal: a EDO e u''(x) = f(x), sem o sinal negativo de
+    -u''=f usado no Example 5.1 do artigo."""
     du_dx = jax.grad(u_exact_fn)
     d2u_dx2 = jax.grad(du_dx)
 
     def f_fn(x):
-        return -d2u_dx2(x)
+        return d2u_dx2(x)
 
     return f_fn
 
 
 # ==========================================
-# 2. FUNCOES TESTE DE LEGENDRE (eq. 4.20) E SUAS DERIVADAS
+# 2. FUNCOES TESTE DE LEGENDRE (eq. 4.20) NO DOMINIO DE REFERENCIA
 # ==========================================
-def legendre_stack(x, kmax):
-    """
-    Retorna [P_0(x), P_1(x), ..., P_kmax(x)] via a recursao de Legendre
-    (eq. B.1 do Apendice B): P_k = ((2k-1) x P_{k-1} - (k-1) P_{k-2}) / k.
-
-    x: escalar. kmax: inteiro estatico (grau maximo).
-    """
-    P0 = jnp.ones_like(x)
-    P1 = x
+def legendre_stack(xi, kmax):
+    """[P_0(xi), ..., P_kmax(xi)] via recursao de Legendre (eq. B.1)."""
+    P0 = jnp.ones_like(xi)
+    P1 = xi
     Ps = [P0, P1]
     for k in range(2, kmax + 1):
-        Pk = ((2 * k - 1) * x * Ps[-1] - (k - 1) * Ps[-2]) / k
+        Pk = ((2 * k - 1) * xi * Ps[-1] - (k - 1) * Ps[-2]) / k
         Ps.append(Pk)
-    return jnp.stack(Ps)  # shape (kmax+1,)
+    return jnp.stack(Ps)
 
 
-def v_vector(x, K):
+def v_vector(xi, K):
+    """v_k(xi) = P_{k+1}(xi) - P_{k-1}(xi), k=1..K (eq. 4.20), definidas
+    no dominio de referencia xi in (-1,1) -> v_k(+-1) = 0."""
+    P = legendre_stack(xi, K + 1)
+    return P[2:] - P[:-2]
+
+
+def make_test_function_tables(xi_q, K):
     """
-    v_k(x) = P_{k+1}(x) - P_{k-1}(x), k = 1, ..., K  (eq. 4.20).
-    Retorna vetor de shape (K,). Escalar x.
+    Avalia v_k(xi_q) e a derivada fisica dv_k/dx(xi_q) = dv_k/dxi * 2
+    (regra da cadeia de x = (xi+1)/2) para todos os k=1..K e todos os
+    pontos de quadratura de referencia xi_q, via autodiff (jax.jacfwd).
+
+    Retorna V, Vx_phys com shape (Q, K).
     """
-    P = legendre_stack(x, K + 1)          # graus 0..K+1, shape (K+2,)
-    return P[2:] - P[:-2]                  # v_k = P_{k+1} - P_{k-1}
+    def v_and_vx(xi_scalar):
+        v = v_vector(xi_scalar, K)
+        dv_dxi = jax.jacfwd(lambda xx: v_vector(xx, K))(xi_scalar)
+        return v, dv_dxi
 
-
-def legendre_test_function_norms(K, dtype=jnp.float64):
-    """
-    Norma L2 EXATA de v_k(x) = P_{k+1}(x) - P_{k-1}(x) em (-1,1), usando a
-    ortogonalidade dos polinomios de Legendre (||P_n||^2_{L2} = 2/(2n+1) e
-    (P_{k+1}, P_{k-1}) = 0):
-
-        ||v_k||^2 = ||P_{k+1}||^2 + ||P_{k-1}||^2 = 2/(2k+3) + 2/(2k-1)
-
-    Usada para normalizar as funcoes teste (ver make_test_function_tables).
-    Sem essa normalizacao, ||v_k|| e ||v_k'|| crescem com k, e para
-    problemas com forcing muito concentrado (ex. 'boundary_layer', onde
-    f(x) tem um pico de ordem 1e4 perto de x=-1) os residuos R_k-F_k de k
-    alto dominam completamente a perda (1/K)*sum_k(R_k-F_k)^2, tornando o
-    treinamento instavel/mal condicionado.
-    """
-    k = np.arange(1, K + 1, dtype=np.float64)
-    norm_sq = 2.0 / (2 * k + 3) + 2.0 / (2 * k - 1)
-    return jnp.asarray(np.sqrt(norm_sq), dtype=dtype)  # shape (K,)
-
-
-def make_test_function_tables(x_q, K, normalize=True):
-    """
-    Avalia v_k(x_q) e v_k'(x_q) para todos os k=1..K e todos os pontos de
-    quadratura x_q, usando autodiff (jax.jacfwd) sobre a recursao de
-    Legendre -- generaliza o Apendice B para qualquer K sem precisar
-    programar as formulas de recursao fechadas.
-
-    Se normalize=True (padrao), cada coluna k e dividida por ||v_k||_{L2}
-    (formula fechada, ver legendre_test_function_norms), de forma que todas
-    as K funcoes teste contribuam em pe de igualdade para a perda -- essencial
-    para problemas com forcing muito concentrado, como 'boundary_layer'.
-
-    Retorna V, Vx com shape (Q, K).
-    """
-    def v_and_vx(x_scalar):
-        v = v_vector(x_scalar, K)
-        vx = jax.jacfwd(lambda xx: v_vector(xx, K))(x_scalar)
-        return v, vx
-
-    V, Vx = jax.vmap(v_and_vx)(x_q)
-
-    if normalize:
-        norms = legendre_test_function_norms(K, dtype=V.dtype)  # (K,)
-        V = V / norms[None, :]
-        Vx = Vx / norms[None, :]
-
-    return V, Vx
+    V, dV_dxi = jax.vmap(v_and_vx)(xi_q)
+    Vx_phys = 2.0 * dV_dxi  # dxi/dx = 2 no mapeamento x = (xi+1)/2
+    return V, Vx_phys
 
 
 # ==========================================
-# 2b. QUADRATURA COMPOSTA (GRADUADA) -- resolve regioes de variacao rapida
+# 3. QUADRATURA DE GAUSS-LEGENDRE MAPEADA PARA (0, 1)
 # ==========================================
-def composite_gauss_legendre(panels, dtype=jnp.float64):
+def gauss_legendre_quadrature_unit_interval(Q, dtype=jnp.float64):
     """
-    Quadratura de Gauss-Legendre composta por paineis. `panels` e uma lista
-    de tuplas (a, b, Q) definindo sub-intervalos [a,b] e o numero de pontos
-    de Gauss-Legendre usados em cada um (os paineis devem particionar o
-    dominio, sem sobreposicao). Os pontos/pesos de cada painel sao mapeados
-    de [-1,1] para [a,b] e concatenados.
+    Pontos/pesos de Gauss-Legendre em (-1,1), mapeados para o dominio
+    fisico (0,1) via x = (xi+1)/2, dx = (1/2) dxi.
 
-    Isso permite concentrar resolucao numa regiao estreita (ex.: a camada
-    limite de largura ~0.01 perto de x=-1 no caso 'boundary_layer') sem
-    precisar aumentar o numero total de pontos no dominio inteiro -- uma
-    unica quadratura Gauss-Legendre global (equivalente a um so painel) nao
-    concentra pontos o suficiente perto do pico do forcing nesse caso.
+    Retorna:
+        xi_q      -- pontos no dominio de referencia (para as funcoes teste)
+        x_q       -- pontos fisicos correspondentes (para a rede)
+        w_q_phys  -- pesos ja escalados pelo jacobiano (1/2)
     """
-    xs, ws = [], []
-    for a, b, Q in panels:
-        xi, wi = np.polynomial.legendre.leggauss(Q)
-        scale = (b - a) / 2.0
-        shift = (b + a) / 2.0
-        xs.append(xi * scale + shift)
-        ws.append(wi * scale)
-    x_q = np.concatenate(xs)
-    w_q = np.concatenate(ws)
-    return jnp.asarray(x_q, dtype=dtype), jnp.asarray(w_q, dtype=dtype)
-
-
-# ==========================================
-# 3. QUADRATURA DE GAUSS-LEGENDRE EM (-1, 1)
-# ==========================================
-def gauss_legendre_quadrature(Q, dtype=jnp.float64):
-    """Pontos e pesos de Gauss-Legendre em (-1,1) (equivalente a
-    Gauss-Jacobi com alpha=beta=0, usado no artigo). Quadratura de painel
-    unico -- adequada para 'steep', onde f(x) varia suavemente."""
-    x_q, w_q = np.polynomial.legendre.leggauss(Q)
-    return jnp.asarray(x_q, dtype=dtype), jnp.asarray(w_q, dtype=dtype)
+    xi_q, w_q = np.polynomial.legendre.leggauss(Q)
+    xi_q = jnp.asarray(xi_q, dtype=dtype)
+    w_q = jnp.asarray(w_q, dtype=dtype)
+    x_q = 0.5 * (xi_q + 1.0)
+    w_q_phys = 0.5 * w_q
+    return xi_q, x_q, w_q_phys
 
 
 def quadrature_for_solution(solution_name, Q):
@@ -316,7 +192,6 @@ def quadrature_for_solution(solution_name, Q):
 
 # ==========================================
 # 4. REDE NEURAL (MLP) E DERIVADAS VIA AUTODIFF
-#    (mesma convencao de parametros/forward do 1d_poisson.py)
 # ==========================================
 def init_mlp_params(key, widths, activation_name="tanh", dtype=jnp.float64,
                      sine_freq_scale=SINE_FREQ_SCALE):
@@ -395,34 +270,34 @@ def build_network_ops(activation_name):
 # ==========================================
 # 5. RESIDUOS/PERDAS
 # ==========================================
-def compute_F(x_q, w_q, V, f_fn):
-    """F_k = sum_q W_q f(x_q) v_k(x_q)  (nao depende dos parametros da rede,
-    calculado uma unica vez por problema)."""
+def compute_F(x_q, w_q_phys, V, f_fn):
+    """F_k = sum_q W_q f(x_q) v_k(x_q) (nao depende dos parametros da
+    rede, calculado uma unica vez)."""
     f_q = jax.vmap(f_fn)(x_q)
-    return jnp.einsum("q,q,qk->k", w_q, f_q, V)
+    return jnp.einsum("q,q,qk->k", w_q_phys, f_q, V)
 
 
-def vpinn_loss_R1(params, x_q, w_q, V, F, tau, g, h, u_scalar, u_xx_scalar):
-    """L^(1): R_k^(1) = -sum_q W_q u_xx(x_q) v_k(x_q)  (eq. 4.6, sem
-    integracao por partes)."""
+def vpinn_loss_R1(params, x_q, w_q_phys, V, F, tau, g, h):
+    """L^(1): R_k^(1) = sum_q W_q u_xx(x_q) v_k(x_q) (sem IBP). Sinal
+    positivo pois a EDO e u''=f (nao -u''=f, como no Example 5.1)."""
     uxx_q = jax.vmap(u_xx_scalar, in_axes=(0, None))(x_q, params)
-    R = -jnp.einsum("q,q,qk->k", w_q, uxx_q, V)
+    R = jnp.einsum("q,q,qk->k", w_q_phys, uxx_q, V)
     L_R = jnp.mean((R - F) ** 2)
-    u_m1 = u_scalar(jnp.asarray(-1.0), params)
-    u_p1 = u_scalar(jnp.asarray(1.0), params)
-    L_b = 0.5 * ((u_m1 - g) ** 2 + (u_p1 - h) ** 2)
+    u_left = u_scalar(jnp.asarray(X_LEFT), params)
+    u_right = u_scalar(jnp.asarray(X_RIGHT), params)
+    L_b = 0.5 * ((u_left - g) ** 2 + (u_right - h) ** 2)
     return L_R + tau * L_b
 
 
-def vpinn_loss_R2(params, x_q, w_q, Vx, F, tau, g, h, u_scalar, u_x_scalar):
-    """L^(2): R_k^(2) = sum_q W_q u_x(x_q) v_k'(x_q)  (eq. 4.7, uma
-    integracao por partes -- forma fraca/simetrica, so precisa de u_x)."""
+def vpinn_loss_R2(params, x_q, w_q_phys, Vx_phys, F, tau, g, h):
+    """L^(2): R_k^(2) = -sum_q W_q u_x(x_q) v_k'(x_q) (uma IBP; o termo
+    de contorno se anula pois v_k(0)=v_k(1)=0)."""
     ux_q = jax.vmap(u_x_scalar, in_axes=(0, None))(x_q, params)
-    R = jnp.einsum("q,q,qk->k", w_q, ux_q, Vx)
+    R = -jnp.einsum("q,q,qk->k", w_q_phys, ux_q, Vx_phys)
     L_R = jnp.mean((R - F) ** 2)
-    u_m1 = u_scalar(jnp.asarray(-1.0), params)
-    u_p1 = u_scalar(jnp.asarray(1.0), params)
-    L_b = 0.5 * ((u_m1 - g) ** 2 + (u_p1 - h) ** 2)
+    u_left = u_scalar(jnp.asarray(X_LEFT), params)
+    u_right = u_scalar(jnp.asarray(X_RIGHT), params)
+    L_b = 0.5 * ((u_left - g) ** 2 + (u_right - h) ** 2)
     return L_R + tau * L_b
 
 
@@ -468,14 +343,9 @@ def train_adam(params, loss_fn, forward, num_steps, eval_freq, lr, X_test, Y_tes
     """
     Treina `params` minimizando `loss_fn(params)` via Adam, registrando a
     loss e o erro L2 relativo (contra X_test/Y_test) a cada `eval_freq`
-    passos. `forward` e a funcao de predicao (ja ligada a ativacao
-    escolhida, ver build_network_ops) usada so para a avaliacao periodica.
-    `clip_norm` limita a norma global do gradiente a cada passo (ver
-    clip_grads_by_global_norm) -- protecao contra instabilidade em perdas
-    mal condicionadas (ex. 'boundary_layer'); use None para desativar.
-    Estrutura em dois niveis de jax.lax.scan (bloco de eval_freq passos de
+    passos. Dois niveis de jax.lax.scan (bloco de eval_freq passos de
     otimizacao, depois uma avaliacao), igual ao padrao usado em
-    `1d_poisson.py` para as trajetorias de treino do L-BFGS.
+    `vpinn_1d_poisson.py`.
     """
     opt_state = init_adam_state(params)
     num_blocks = num_steps // eval_freq
@@ -503,142 +373,122 @@ def train_adam(params, loss_fn, forward, num_steps, eval_freq, lr, X_test, Y_tes
 # ==========================================
 # 7. LOOP PRINCIPAL DE EXPERIMENTOS
 # ==========================================
-X_TEST = jnp.linspace(-1.0, 1.0, 1000, dtype=jnp.float64).reshape(-1, 1)
+X_TEST = jnp.linspace(X_LEFT, X_RIGHT, 1000, dtype=jnp.float64).reshape(-1, 1)
+Y_TEST = jax.vmap(u_exact_fn)(X_TEST[:, 0]).reshape(-1, 1)
 
-for solution_name, u_exact_fn in EXACT_SOLUTIONS.items():
-    f_fn = make_force_term(u_exact_fn)
-    g = float(u_exact_fn(jnp.asarray(-1.0)))
-    h = float(u_exact_fn(jnp.asarray(1.0)))
-    Y_TEST = jax.vmap(u_exact_fn)(X_TEST[:, 0]).reshape(-1, 1)
+f_fn = make_force_term(u_exact_fn)
+g = float(u_exact_fn(jnp.asarray(X_LEFT)))
+h = float(u_exact_fn(jnp.asarray(X_RIGHT)))
 
-    # ------ dados fixos da formulacao variacional (nao dependem da rede) ------
-    x_q, w_q = quadrature_for_solution(solution_name, Q_QUADRATURE)
-    V, Vx = make_test_function_tables(x_q, K_TEST_FUNCTIONS)
-    F = compute_F(x_q, w_q, V, f_fn)
+# ------ dados fixos da formulacao variacional (nao dependem da rede) ------
+xi_q, x_q, w_q_phys = gauss_legendre_quadrature_unit_interval(Q_QUADRATURE)
+V, Vx_phys = make_test_function_tables(xi_q, K_TEST_FUNCTIONS)
+F = compute_F(x_q, w_q_phys, V, f_fn)
 
-    for L in HIDDEN_LAYER_CONFIGS:
-        width = [1] + [NEURONS_PER_LAYER] * L + [1]
+for L in HIDDEN_LAYER_CONFIGS:
+    width = [1] + [NEURONS_PER_LAYER] * L + [1]
 
-        for activation_name in ACTIVATIONS_TO_RUN:
-            # forward/u_scalar/u_x_scalar/u_xx_scalar ligados a esta ativacao
-            # (ver build_network_ops -- evita o problema de cache do jax.jit
-            # discutido no comentario de build_forward).
-            forward, u_scalar, u_x_scalar, u_xx_scalar = build_network_ops(activation_name)
+    methods = {
+        "vpinnR1": lambda p: vpinn_loss_R1(p, x_q, w_q_phys, V, F, TAU_VPINN, g, h),
+        "vpinnR2": lambda p: vpinn_loss_R2(p, x_q, w_q_phys, Vx_phys, F, TAU_VPINN, g, h),
+    }
 
-            methods = {
-                "vpinnR1": lambda p: vpinn_loss_R1(
-                    p, x_q, w_q, V, F, TAU_VPINN[solution_name], g, h, u_scalar, u_xx_scalar
-                ),
-                "vpinnR2": lambda p: vpinn_loss_R2(
-                    p, x_q, w_q, Vx, F, TAU_VPINN[solution_name], g, h, u_scalar, u_x_scalar
-                ),
-            }
+    for method_tag, loss_builder in methods.items():
+        print("\n" + "=" * 20)
+        print(f"PROBLEMA=poisson_1d_unit_interval | METODO={method_tag} | L={L} hidden layers")
+        print("=" * 20)
 
-            # Sufixo de tag: "tanh" nao adiciona sufixo (mantem compatibilidade
-            # com os JSONs/plots ja existentes); outras ativacoes ganham
-            # "_<nome>" para nao colidir com eles.
-            activation_suffix = "" if activation_name == "tanh" else f"_{activation_name}"
+        loss_trajectories, err_trajectories, l2_errors = [], [], []
+        acc_train_time, acc_eval_time = 0.0, 0.0
+        Y_nn_final, params_final_flat = None, None
 
-            for method_tag, loss_builder in methods.items():
-                print("\n" + "=" * 20)
-                print(f"SOLUCAO={solution_name} | METODO={method_tag} | "
-                      f"ATIVACAO={activation_name} | L={L} hidden layers")
-                print("=" * 20)
+        for run in range(NUM_RUNS):
+            run_key = random.fold_in(main_key, hash((method_tag, L, run)) % (2 ** 31))
+            params = init_mlp_params(run_key, width)
 
-                loss_trajectories, err_trajectories, l2_errors = [], [], []
-                acc_train_time, acc_eval_time = 0.0, 0.0
-                Y_nn_final, params_final_flat = None, None
+            t0 = time.perf_counter()
+            params, loss_traj, err_traj = train_adam(
+                params, loss_builder, NUM_STEPS, EVAL_FREQ, LEARNING_RATE, X_TEST, Y_TEST
+            )
+            jax.block_until_ready(params)
+            t_train = time.perf_counter() - t0
+            acc_train_time += t_train
 
-                for run in range(NUM_RUNS):
-                    run_key = random.fold_in(
-                        main_key, hash((solution_name, method_tag, activation_name, L, run)) % (2**31)
-                    )
-                    params = init_mlp_params(run_key, width, activation_name=activation_name)
+            loss_trajectories.append(loss_traj)
+            err_trajectories.append(err_traj)
 
-                    t0 = time.perf_counter()
-                    params, loss_traj, err_traj = train_adam(
-                        params, loss_builder, forward, NUM_STEPS, EVAL_FREQ, LEARNING_RATE, X_TEST, Y_TEST
-                    )
-                    jax.block_until_ready(params)
-                    t_train = time.perf_counter() - t0
-                    acc_train_time += t_train
+            t0 = time.perf_counter()
+            Y_nn = forward(X_TEST, params)
+            Y_nn.block_until_ready()
+            acc_eval_time += time.perf_counter() - t0
 
-                    loss_trajectories.append(loss_traj)
-                    err_trajectories.append(err_traj)
+            rel_l2 = float(jnp.linalg.norm(Y_nn - Y_TEST) / jnp.linalg.norm(Y_TEST))
+            l2_errors.append(rel_l2)
+            print(f"Run {run + 1}/{NUM_RUNS}: erro L2 relativo = {rel_l2:.6e} "
+                  f"(treino: {t_train:.2f}s)")
 
-                    t0 = time.perf_counter()
-                    Y_nn = forward(X_TEST, params)
-                    Y_nn.block_until_ready()
-                    acc_eval_time += time.perf_counter() - t0
+            if run == NUM_RUNS - 1:
+                Y_nn_final = np.asarray(Y_nn)
+                flat_params, _ = jax.flatten_util.ravel_pytree(params)
+                params_final_flat = np.asarray(flat_params)
 
-                    rel_l2 = float(jnp.linalg.norm(Y_nn - Y_TEST) / jnp.linalg.norm(Y_TEST))
-                    l2_errors.append(rel_l2)
-                    print(f"Run {run + 1}/{NUM_RUNS}: erro L2 relativo = {rel_l2:.6e} "
-                          f"(treino: {t_train:.2f}s)")
+        avg_rel_l2 = float(np.mean(l2_errors))
+        median_rel_l2 = float(np.median(l2_errors))
+        avg_train_time = acc_train_time / NUM_RUNS
+        avg_eval_time = acc_eval_time / NUM_RUNS
 
-                    if run == NUM_RUNS - 1:
-                        Y_nn_final = np.asarray(Y_nn)
-                        flat_params, _ = jax.flatten_util.ravel_pytree(params)
-                        params_final_flat = np.asarray(flat_params)
+        print(f"--- Erro L2 relativo medio: {avg_rel_l2:.6e} | "
+              f"mediana: {median_rel_l2:.6e} ---")
 
-                avg_rel_l2 = float(np.mean(l2_errors))
-                median_rel_l2 = float(np.median(l2_errors))
-                avg_train_time = acc_train_time / NUM_RUNS
-                avg_eval_time = acc_eval_time / NUM_RUNS
+        tag = f"unit_interval_{method_tag}_L{L}"
 
-                print(f"--- Erro L2 relativo medio: {avg_rel_l2:.6e} | "
-                      f"mediana: {median_rel_l2:.6e} ---")
+        results = {
+            "architecture": width,
+            "num_hidden_layers": L,
+            "method": f"VPINN {method_tag[-2:]} - Legendre",
+            "problem": "poisson_1d_unit_interval",
+            "domain": [X_LEFT, X_RIGHT],
+            "n_test_functions": K_TEST_FUNCTIONS,
+            "n_quadrature_points": Q_QUADRATURE,
+            "tau": TAU_VPINN,
+            "learning_rate": LEARNING_RATE,
+            "num_iterations": NUM_STEPS,
+            "num_runs_avg": NUM_RUNS,
+            "error_relativo_medio": avg_rel_l2,
+            "error_relativo_mediana": median_rel_l2,
+            "time_training": avg_train_time,
+            "time_evaluation": avg_eval_time,
+            "num_params": int(params_final_flat.shape[0]),
+        }
+        with open(f"dados_vpinn_1d_{tag}.json", "w") as fjson:
+            json.dump(results, fjson, indent=4)
 
-                tag = f"{solution_name}_{method_tag}_L{L}{activation_suffix}"
+        points = {
+            "x": X_TEST.flatten().tolist(),
+            "y_exact": np.asarray(Y_TEST).flatten().tolist(),
+            "y_nn": Y_nn_final.flatten().tolist(),
+            "network_weights": params_final_flat.tolist(),
+        }
+        with open(f"pontos_vpinn_1d_{tag}.json", "w") as fjson:
+            json.dump(points, fjson, indent=4)
 
-                results = {
-                    "architecture": width,
-                    "num_hidden_layers": L,
-                    "method": f"VPINN {method_tag[-2:]} - Legendre",
-                    "activation": activation_name,
-                    "exact_solution": solution_name,
-                    "n_test_functions": K_TEST_FUNCTIONS,
-                    "n_quadrature_points": Q_QUADRATURE,
-                    "tau": TAU_VPINN[solution_name],
-                    "learning_rate": LEARNING_RATE,
-                    "num_iterations": NUM_STEPS,
-                    "num_runs_avg": NUM_RUNS,
-                    "error_relativo_medio": avg_rel_l2,
-                    "error_relativo_mediana": median_rel_l2,
-                    "time_training": avg_train_time,
-                    "time_evaluation": avg_eval_time,
-                    "num_params": int(params_final_flat.shape[0]),
-                }
-                with open(f"dados_vpinn_1d_{tag}.json", "w") as fjson:
-                    json.dump(results, fjson, indent=4)
+        loss_trajectories = np.stack(loss_trajectories, axis=0)
+        err_trajectories = np.stack(err_trajectories, axis=0)
+        training_curve = {
+            "architecture": width,
+            "method": f"VPINN {method_tag[-2:]} - Legendre",
+            "problem": "poisson_1d_unit_interval",
+            "num_iterations": NUM_STEPS,
+            "num_runs": NUM_RUNS,
+            "steps": list(range(EVAL_FREQ, NUM_STEPS + 1, EVAL_FREQ)),
+            "l2_relative_error_per_run": err_trajectories.tolist(),
+            "loss_per_run": loss_trajectories.tolist(),
+            "l2_relative_error_mean": err_trajectories.mean(axis=0).tolist(),
+            "l2_relative_error_std": err_trajectories.std(axis=0).tolist(),
+        }
+        with open(f"curva_treino_vpinn_1d_{tag}.json", "w") as fjson:
+            json.dump(training_curve, fjson, indent=4)
 
-                points = {
-                    "x": X_TEST.flatten().tolist(),
-                    "y_exact": np.asarray(Y_TEST).flatten().tolist(),
-                    "y_nn": Y_nn_final.flatten().tolist(),
-                    "network_weights": params_final_flat.tolist(),
-                }
-                with open(f"pontos_vpinn_1d_{tag}.json", "w") as fjson:
-                    json.dump(points, fjson, indent=4)
-
-                loss_trajectories = np.stack(loss_trajectories, axis=0)
-                err_trajectories = np.stack(err_trajectories, axis=0)
-                training_curve = {
-                    "architecture": width,
-                    "method": f"VPINN {method_tag[-2:]} - Legendre",
-                    "activation": activation_name,
-                    "exact_solution": solution_name,
-                    "num_iterations": NUM_STEPS,
-                    "num_runs": NUM_RUNS,
-                    "steps": list(range(EVAL_FREQ, NUM_STEPS + 1, EVAL_FREQ)),
-                    "l2_relative_error_per_run": err_trajectories.tolist(),
-                    "loss_per_run": loss_trajectories.tolist(),
-                    "l2_relative_error_mean": err_trajectories.mean(axis=0).tolist(),
-                    "l2_relative_error_std": err_trajectories.std(axis=0).tolist(),
-                }
-                with open(f"curva_treino_vpinn_1d_{tag}.json", "w") as fjson:
-                    json.dump(training_curve, fjson, indent=4)
-
-                print(f"Dados salvos para tag={tag}")
+        print(f"Dados salvos para tag={tag}")
 
 print("\nConcluido. Todos os arquivos JSON foram salvos no diretorio atual.")

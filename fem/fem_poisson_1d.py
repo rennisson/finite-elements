@@ -134,13 +134,13 @@ def main():
     if not os.path.exists(gt_file):
         raise FileNotFoundError(f"O arquivo '{gt_file}' não foi encontrado.")
     
-    # Lendo arquivo JSON em vez de NPZ
+    # Lendo arquivo JSON 
     with open(gt_file, "r") as f_in:
         gt_data = json.load(f_in)
         
     # Importante: Converter listas JSON para arrays do numpy
-    x_eval = np.array(gt_data["x_eval"])
-    u_eval = np.array(gt_data["u_eval"])
+    x_eval = np.array(gt_data["X"])
+    u_eval = np.array(gt_data["U_true"])
     
     output_dir = Path("fem_poisson_1d")
     output_dir.mkdir(exist_ok=True)

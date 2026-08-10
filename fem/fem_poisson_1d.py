@@ -129,13 +129,18 @@ def solve_poisson_1d(nx: int, x_target: np.ndarray, y_target_exact: np.ndarray, 
 
 
 def main():
-    gt_file = "gt_poisson_1d_512.npz"
+    # Substituído gt_poisson_1d_512.npz por JSON
+    gt_file = "gt_poisson_1d.json"
     if not os.path.exists(gt_file):
         raise FileNotFoundError(f"O arquivo '{gt_file}' não foi encontrado.")
     
-    gt_data = np.load(gt_file)
-    x_eval = gt_data["x_eval"]
-    u_eval = gt_data["u_eval"]
+    # Lendo arquivo JSON em vez de NPZ
+    with open(gt_file, "r") as f_in:
+        gt_data = json.load(f_in)
+        
+    # Importante: Converter listas JSON para arrays do numpy
+    x_eval = np.array(gt_data["x_eval"])
+    u_eval = np.array(gt_data["u_eval"])
     
     output_dir = Path("fem_poisson_1d")
     output_dir.mkdir(exist_ok=True)
@@ -153,8 +158,14 @@ def main():
         resultados_fem["solve_time"].append(solve_time)
         resultados_fem["eval_time"].append(eval_time)
 
-        nome_arquivo = output_dir / f'dados_fem_nx{nx}.npz'
-        np.savez_compressed(nome_arquivo, x_fem=x, y_fem=y)
+        # Salvando a saída de cada passo num arquivo JSON, mantendo a estrutura
+        nome_arquivo = output_dir / f'dados_fem_nx{nx}.json'
+        with open(nome_arquivo, "w") as json_out:
+            # arrays do numpy precisam ser convertidos usando .tolist() para a serialização no json
+            json.dump({
+                "x_fem": x.tolist(), 
+                "y_fem": y.tolist()
+            }, json_out)
     
     with open("fem_poisson_1d/fem_results_1d.json", "w") as f_out:
         json.dump(resultados_fem, f_out, indent=4)

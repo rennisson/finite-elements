@@ -223,35 +223,6 @@ def sv_pinn_norm_squared(residual, phi_samples):
 
 
 # ==========================================
-# 3. Perda total da SV-PINN (Eq. 4.5)
-# ==========================================
-def sv_pinn_loss(residual_interior, phi_samples, boundary_residual=None, lam=0.0):
-    """
-    L_SV(theta) = L_{Phi^(n)}(theta) + lambda * L_b(theta)
-
-    lam = 0 quando a condicao de contorno e' imposta de forma "hard"
-    na arquitetura (e.g. via DAFF), como no paper.
-
-    Parametros
-    ----------
-    residual_interior: R(x_c^(i)) no grid de colocacao, shape (n,)*d.
-    phi_samples: realizacoes de Phi^(h), shape (N,) + (n,)*d.
-    boundary_residual: u_theta(x_b) - g(x_b) nos pontos de contorno
-                        (qualquer shape); None se lam = 0.
-    lam: peso da penalidade de contorno.
-
-    Retorna
-    ----------
-    Escalar, L_SV(theta).
-    """
-    L_phi = sv_pinn_norm_squared(residual_interior, phi_samples)
-    if lam == 0.0 or boundary_residual is None:
-        return L_phi
-    L_b = jnp.mean(boundary_residual ** 2)
-    return L_phi + lam * L_b
-
-
-# ==========================================
 # 5. ARQUITETURA DA REDE E RESÍDUO DA EDP
 #    (mesma arquitetura/derivadas de pinn_poisson_1d.py; aqui devolvemos o
 #    RESÍDUO BRUTO R(x) = u_xx(x) - rhs(x), pois a perda SV-PINN (Eq. 4.4)
@@ -302,7 +273,7 @@ def compute_lambda(params, x_grid, phi_samples, eps=1e-10):
     R = residual_interior(params, x_grid)
     L_phi = sv_pinn_norm_squared(R, phi_samples)
     L_b = jnp.mean(boundary_residual(params) ** 2)
-    return L_phi / (L_b + eps)
+    return 2 * (L_phi / (L_b + eps))
 
 # ==========================================
 # 7. TREINAMENTO DAS SV-PINNs (SOMENTE L-BFGS, SEM ADAM)
@@ -316,9 +287,9 @@ architectures = [
  
 n_colloc = 1024            # pontos de colocação = grid da DST-I (Table A.8, caso 1D)
 N_test_functions = 25000   # numero de funcoes teste amostradas (Table A.8, caso 1D)
-num_runs = 3               # 3 repeticoes, como no protocolo experimental do paper (Sec. 6)
+num_runs = 10               # 3 repeticoes, como no protocolo experimental do paper (Sec. 6)
 lbfgs_maxiter = 5000       # SV-PINNs treinadas por L-BFGS por 5,000 passos (Sec. 6)
-tau = 1.0                  # escala fixa de Phi; o equilibrio dos termos da perda e feito via lambda
+tau = 0.1                  # escala fixa de Phi; o equilibrio dos termos da perda e feito via lambda
  
 main_key = jax.random.PRNGKey(42)
  
@@ -359,7 +330,7 @@ for arch in architectures:
         Rb = boundary_residual(params)
         L_phi = sv_pinn_norm_squared(R, phi_samples_run)
         L_b = jnp.mean(Rb ** 2)
-        return L_phi + lam * L_b
+        return L_phi + (2 * lam) * L_b
  
     # lambda e' fixado no inicio de cada run (lambda = L_Phi(theta_0) / L_b(theta_0))
     # e mantido constante durante todo o treinamento; o L-BFGS roda uma unica vez
@@ -466,6 +437,9 @@ for arch in architectures:
     print(f"Tempo Médio Treino L-BFGS: {avg_train_lbfgs:.3f}s")
     print(f"Tempo Médio Avaliação: {avg_eval_time:.5f}s")
     print("-" * 20)
+
+    output_dir = Path("svpinn_poisson_1d")
+    output_dir.mkdir(exist_ok=True)
  
     results = {
         'architecture': width,
@@ -482,7 +456,7 @@ for arch in architectures:
         'num_params': int(len(params_final_flat))
     }
 
-    nome_arquivo = f'dados_svpinn_1d_{arch_str}.json'
+    nome_arquivo = output_dir / f'dados_svpinn_1d_{arch_str}.json'
     with open(nome_arquivo, 'w') as f:
         json.dump(results, f, indent=4)
 
@@ -492,7 +466,7 @@ for arch in architectures:
         'network_weights': params_final_flat.tolist()
     }
 
-    nome_arquivo = f'pontos_svpinn_1d_{arch_str}.json'
+    nome_arquivo = output_dir / f'pontos_svpinn_1d_{arch_str}.json'
     with open(nome_arquivo, 'w') as f:
         json.dump(points, f, indent=4)
 
@@ -515,7 +489,7 @@ for arch in architectures:
         'l2_relative_error_std': all_l2_error_trajectories.std(axis=0).tolist(),
     }
 
-    nome_arquivo = f'curva_treino_svpinn_1d_{arch_str}.json'
+    nome_arquivo = output_dir / f'curva_treino_svpinn_1d_{arch_str}.json'
     with open(nome_arquivo, 'w') as f:
         json.dump(training_curve, f, indent=4)
 

@@ -61,15 +61,7 @@ config.update("jax_enable_x64", True)
 config.update("jax_default_matmul_precision", "highest")
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
-# Ativacoes disponiveis. O artigo usa tanh na Secao 5 (Fig. 9-10, rede
-# profunda) e seno na Secao 4 (Fig. 4-8, rede rasa: u_NN = sum a_j sin(w_j x
-# + theta_j), eq. 4.10). jnp.sin funciona como qualquer outra ativacao
-# elementwise do JAX -- a parte que exige cuidado e a INICIALIZACAO dos
-# pesos da 1a camada (ver init_mlp_params e a discussao no Exemplo 4.2).
-ACTIVATIONS = {
-    "tanh": jax.nn.tanh,
-    "sine": jnp.sin,
-}
+activation_function = jax.nn.tanh
 
 K_TEST_FUNCTIONS = 60
 Q_QUADRATURE = 100
@@ -168,103 +160,41 @@ def gauss_legendre_quadrature_unit_interval(Q, dtype=jnp.float64):
     return xi_q, x_q, w_q_phys
 
 
-def quadrature_for_solution(solution_name, Q):
-    """
-    Escolhe a quadratura apropriada para cada solucao exata.
-
-    'steep' varia suavemente em todo o dominio -> um unico painel de Gauss-
-    Legendre com Q pontos (como antes) basta.
-
-    'boundary_layer' tem uma camada de largura ~0.01 perto de x=-1, onde
-    f(x) chega a ~1e4 -- um unico painel Gauss-Legendre com Q~100 nao
-    concentra pontos o suficiente ali. Usamos 3 paineis graduados
-    ([-1,-0.95], [-0.95,-0.8], [-0.8,1]), refinando a resolucao conforme nos
-    aproximamos do pico, mantendo o total de pontos proximo de Q.
-    """
-    if solution_name == "boundary_layer":
-        q_per_panel = max(Q // 3, 20)
-        panels = [(-1.0, -0.95, q_per_panel),
-                  (-0.95, -0.8, q_per_panel),
-                  (-0.8, 1.0, q_per_panel)]
-        return composite_gauss_legendre(panels)
-    return gauss_legendre_quadrature(Q)
-
-
 # ==========================================
 # 4. REDE NEURAL (MLP) E DERIVADAS VIA AUTODIFF
 # ==========================================
-def init_mlp_params(key, widths, activation_name="tanh", dtype=jnp.float64,
-                     sine_freq_scale=SINE_FREQ_SCALE):
-    """
-    widths = [n_in, n_hidden_1, ..., n_hidden_L, n_out].
-
-    Para activation_name="sine": a 1a camada computa sin(w_j x + theta_j)
-    (eq. 4.10). O artigo (Discussao do Exemplo 4.2) mostra que a
-    inicializacao Glorot/Xavier padrao (variancia ~1/N) faz o otimizador
-    falhar, pois os w_j nascem muito proximos de zero e nenhum neuronio
-    comeca perto da frequencia alvo. A correcao sugerida pelo artigo e
-    alargar a distribuicao inicial (e/ou aumentar N) -- aqui inicializamos
-    w_j ~ Uniform(-sine_freq_scale, sine_freq_scale) e theta_j ~
-    Uniform(-pi, pi) na 1a camada, o que da a rede uma chance real de ter
-    algum neuronio proximo da frequencia de u_exact. As camadas seguintes
-    (redes profundas com seno) usam a mesma ideia com uma escala menor,
-    ja que a entrada delas ja passou por uma nao-linearidade periodica.
-    """
-    glorot = jax.nn.initializers.glorot_normal()
+def init_mlp_params(key, widths, dtype=jnp.float64):
+    """widths = [n_in, n_hidden_1, ..., n_hidden_L, n_out]."""
+    initializer = jax.nn.initializers.glorot_normal()
     keys = random.split(key, len(widths) - 1)
     params = []
-    for i, (k, lin, lout) in enumerate(zip(keys, widths[:-1], widths[1:])):
-        is_last = (i == len(widths) - 2)
-        if activation_name == "sine" and not is_last:
-            k_w, k_b = random.split(k)
-            layer_scale = sine_freq_scale if i == 0 else 2.0
-            W = random.uniform(k_w, (lin, lout), minval=-layer_scale, maxval=layer_scale, dtype=dtype)
-            B = random.uniform(k_b, (1, lout), minval=-jnp.pi, maxval=jnp.pi, dtype=dtype)
-        else:
-            W = glorot(k, (lin, lout), dtype)
-            B = glorot(k, (1, lout), dtype)
+    for k, lin, lout in zip(keys, widths[:-1], widths[1:]):
+        W = initializer(k, (lin, lout), dtype)
+        B = initializer(k, (1, lout), dtype)
         params.append({"W": W, "B": B})
     return params
 
 
-def build_forward(activation_name):
-    """
-    Fabrica de `forward` especifica por ativacao. Necessario porque
-    `forward` e jitado: se ele lesse uma variavel global de ativacao por
-    closure, o cache de compilacao do JAX poderia continuar usando a
-    ativacao antiga apos trocarmos a global (a ativacao nao e um argumento
-    rastreado). Construindo uma funcao jitada nova por ativacao evitamos
-    esse problema por completo.
-    """
-    act = ACTIVATIONS[activation_name]
-
-    @jax.jit
-    def forward(x, params):
-        """x: shape (batch, 1). Retorna shape (batch, 1)."""
-        *hidden, output = params
-        for layer in hidden:
-            x = act(x @ layer["W"] + layer["B"])
-        return x @ output["W"] + output["B"]
-
-    return forward
+@jax.jit
+def forward(x, params):
+    """x: shape (batch, 1). Retorna shape (batch, 1)."""
+    *hidden, output = params
+    for layer in hidden:
+        x = activation_function(x @ layer["W"] + layer["B"])
+    return x @ output["W"] + output["B"]
 
 
-def build_network_ops(activation_name):
-    """Retorna (forward, u_scalar, u_x_scalar, u_xx_scalar) ligados a uma
-    ativacao especifica, todos construidos a partir do mesmo `forward`."""
-    forward = build_forward(activation_name)
+def u_scalar(x, params):
+    """u_NN avaliado em um ponto escalar x."""
+    return forward(x.reshape(1, 1), params)[0, 0]
 
-    def u_scalar(x, params):
-        """u_NN avaliado em um ponto escalar x."""
-        return forward(x.reshape(1, 1), params)[0, 0]
 
-    def u_x_scalar(x, params):
-        return jax.grad(u_scalar, argnums=0)(x, params)
+def u_x_scalar(x, params):
+    return jax.grad(u_scalar, argnums=0)(x, params)
 
-    def u_xx_scalar(x, params):
-        return jax.grad(u_x_scalar, argnums=0)(x, params)
 
-    return forward, u_scalar, u_x_scalar, u_xx_scalar
+def u_xx_scalar(x, params):
+    return jax.grad(u_x_scalar, argnums=0)(x, params)
 
 
 # ==========================================
@@ -304,22 +234,6 @@ def vpinn_loss_R2(params, x_q, w_q_phys, Vx_phys, F, tau, g, h):
 # ==========================================
 # 6. OTIMIZADOR ADAM (implementacao manual, sem dependencia extra)
 # ==========================================
-def clip_grads_by_global_norm(grads, clip_norm):
-    """
-    Reescala (sem mudar a direcao) o gradiente inteiro (pytree) se sua norma
-    global exceder `clip_norm`. Protecao contra os gradientes ocasionalmente
-    enormes que a perda variacional pode gerar quando o forcing e muito
-    concentrado (caso 'boundary_layer') -- sem isso, um unico passo de Adam
-    influenciado por um residuo de teste de indice alto pode desestabilizar
-    todo o treinamento (visivel como picos/re-crescimento do erro L2 durante
-    o treino).
-    """
-    leaves = jax.tree_util.tree_leaves(grads)
-    global_norm = jnp.sqrt(sum(jnp.sum(g ** 2) for g in leaves))
-    scale = jnp.minimum(1.0, clip_norm / (global_norm + 1e-12))
-    return jax.tree_util.tree_map(lambda g: g * scale, grads)
-
-
 def init_adam_state(params):
     m = jax.tree_util.tree_map(jnp.zeros_like, params)
     v = jax.tree_util.tree_map(jnp.zeros_like, params)
@@ -338,8 +252,7 @@ def adam_update(params, grads, state, lr, b1=0.9, b2=0.999, eps=1e-8):
     return new_params, {"m": m, "v": v, "t": t}
 
 
-def train_adam(params, loss_fn, forward, num_steps, eval_freq, lr, X_test, Y_test,
-                clip_norm=CLIP_NORM):
+def train_adam(params, loss_fn, num_steps, eval_freq, lr, X_test, Y_test):
     """
     Treina `params` minimizando `loss_fn(params)` via Adam, registrando a
     loss e o erro L2 relativo (contra X_test/Y_test) a cada `eval_freq`
@@ -353,8 +266,6 @@ def train_adam(params, loss_fn, forward, num_steps, eval_freq, lr, X_test, Y_tes
     def opt_step(carry, _):
         p, s = carry
         loss, grads = jax.value_and_grad(loss_fn)(p)
-        if clip_norm is not None:
-            grads = clip_grads_by_global_norm(grads, clip_norm)
         p, s = adam_update(p, grads, s, lr)
         return (p, s), loss
 

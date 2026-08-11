@@ -64,6 +64,8 @@ import time
 
 from jax import random, config
 
+from pathlib import Path
+
 config.update("jax_enable_x64", True)
 config.update("jax_default_matmul_precision", "highest")
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
@@ -374,13 +376,17 @@ for L in HIDDEN_LAYER_CONFIGS:
         print(f"--- Erro L2 relativo medio: {avg_rel_l2:.6e} | "
               f"mediana: {median_rel_l2:.6e} ---")
 
-        tag = f"unit_interval_{method_tag}_L{L}"
+        tag = f"poisson_1d_{method_tag}_L{L}"
 
+        output_dir = Path("vpinn_poisson_1d")
+        output_dir.mkdir(exist_ok=True)
+
+        nome_arquivo = output_dir / f"dados_vpinn_1d_{tag}.json"
         results = {
             "architecture": width,
             "num_hidden_layers": L,
             "method": f"VPINN {method_tag[-2:]} - Legendre",
-            "problem": "poisson_1d_unit_interval",
+            "problem": "poisson_1d",
             "domain": [X_LEFT, X_RIGHT],
             "n_test_functions": K_TEST_FUNCTIONS,
             "n_quadrature_points": Q_QUADRATURE,
@@ -394,24 +400,26 @@ for L in HIDDEN_LAYER_CONFIGS:
             "time_evaluation": avg_eval_time,
             "num_params": int(params_final_flat.shape[0]),
         }
-        with open(f"dados_vpinn_1d_{tag}.json", "w") as fjson:
+        with open(nome_arquivo, "w") as fjson:
             json.dump(results, fjson, indent=4)
 
+        nome_arquivo = output_dir / f"pontos_vpinn_1d_{tag}.json"
         points = {
             "x": X_TEST.flatten().tolist(),
             "y_exact": np.asarray(Y_TEST).flatten().tolist(),
             "y_nn": Y_nn_final.flatten().tolist(),
             "network_weights": params_final_flat.tolist(),
         }
-        with open(f"pontos_vpinn_1d_{tag}.json", "w") as fjson:
+        with open(nome_arquivo, "w") as fjson:
             json.dump(points, fjson, indent=4)
 
+        nome_arquivo = output_dir / f"curva_treino_vpinn_1d_{tag}.json"
         loss_trajectories = np.stack(loss_trajectories, axis=0)
         err_trajectories = np.stack(err_trajectories, axis=0)
         training_curve = {
             "architecture": width,
             "method": f"VPINN {method_tag[-2:]} - Legendre",
-            "problem": "poisson_1d_unit_interval",
+            "problem": "poisson_1d",
             "num_iterations": NUM_STEPS,
             "num_runs": NUM_RUNS,
             "steps": list(range(EVAL_FREQ, NUM_STEPS + 1, EVAL_FREQ)),
@@ -420,7 +428,7 @@ for L in HIDDEN_LAYER_CONFIGS:
             "l2_relative_error_mean": err_trajectories.mean(axis=0).tolist(),
             "l2_relative_error_std": err_trajectories.std(axis=0).tolist(),
         }
-        with open(f"curva_treino_vpinn_1d_{tag}.json", "w") as fjson:
+        with open(nome_arquivo, "w") as fjson:
             json.dump(training_curve, fjson, indent=4)
 
         print(f"Dados salvos para tag={tag}")

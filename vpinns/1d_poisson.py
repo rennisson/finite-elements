@@ -322,115 +322,116 @@ V, Vx_phys = make_test_function_tables(xi_q, K_TEST_FUNCTIONS)
 F = compute_F(x_q, w_q_phys, V, f_fn)
 
 for L in HIDDEN_LAYER_CONFIGS:
-    width = [1] + [NEURONS_PER_LAYER] * L + [1]
+    for NEURONS in NEURONS_PER_LAYER:
+        width = [1] + [NEURONS] * L + [1]
 
-    methods = {
-        "vpinnR1": lambda p: vpinn_loss_R1(p, x_q, w_q_phys, V, F, TAU_VPINN, g, h),
-        "vpinnR2": lambda p: vpinn_loss_R2(p, x_q, w_q_phys, Vx_phys, F, TAU_VPINN, g, h),
-    }
-
-    for method_tag, loss_builder in methods.items():
-        print("\n" + "=" * 20)
-        print(f"PROBLEMA=poisson_1d_unit_interval | METODO={method_tag} | L={L} hidden layers")
-        print("=" * 20)
-
-        loss_trajectories, err_trajectories, l2_errors = [], [], []
-        acc_train_time, acc_eval_time = 0.0, 0.0
-        Y_nn_final, params_final_flat = None, None
-
-        for run in range(NUM_RUNS):
-            run_key = random.fold_in(main_key, hash((method_tag, L, run)) % (2 ** 31))
-            params = init_mlp_params(run_key, width)
-
-            t0 = time.perf_counter()
-            params, loss_traj, err_traj = train_adam(
-                params, loss_builder, NUM_STEPS, EVAL_FREQ, LEARNING_RATE, X_TEST, Y_TEST
-            )
-            jax.block_until_ready(params)
-            t_train = time.perf_counter() - t0
-            acc_train_time += t_train
-
-            loss_trajectories.append(loss_traj)
-            err_trajectories.append(err_traj)
-
-            t0 = time.perf_counter()
-            Y_nn = forward(X_TEST, params)
-            Y_nn.block_until_ready()
-            acc_eval_time += time.perf_counter() - t0
-
-            rel_l2 = float(jnp.linalg.norm(Y_nn - Y_TEST) / jnp.linalg.norm(Y_TEST))
-            l2_errors.append(rel_l2)
-            print(f"Run {run + 1}/{NUM_RUNS}: erro L2 relativo = {rel_l2:.6e} "
-                  f"(treino: {t_train:.2f}s)")
-
-            if run == NUM_RUNS - 1:
-                Y_nn_final = np.asarray(Y_nn)
-                flat_params, _ = jax.flatten_util.ravel_pytree(params)
-                params_final_flat = np.asarray(flat_params)
-
-        avg_rel_l2 = float(np.mean(l2_errors))
-        median_rel_l2 = float(np.median(l2_errors))
-        avg_train_time = acc_train_time / NUM_RUNS
-        avg_eval_time = acc_eval_time / NUM_RUNS
-
-        print(f"--- Erro L2 relativo medio: {avg_rel_l2:.6e} | "
-              f"mediana: {median_rel_l2:.6e} ---")
-
-        tag = f"poisson_1d_{method_tag}_L{L}"
-
-        output_dir = Path("vpinn_poisson_1d")
-        output_dir.mkdir(exist_ok=True)
-
-        nome_arquivo = output_dir / f"dados_vpinn_1d_{tag}.json"
-        results = {
-            "architecture": width,
-            "num_hidden_layers": L,
-            "method": f"VPINN {method_tag[-2:]} - Legendre",
-            "problem": "poisson_1d",
-            "domain": [X_LEFT, X_RIGHT],
-            "n_test_functions": K_TEST_FUNCTIONS,
-            "n_quadrature_points": Q_QUADRATURE,
-            "tau": TAU_VPINN,
-            "learning_rate": LEARNING_RATE,
-            "num_iterations": NUM_STEPS,
-            "num_runs_avg": NUM_RUNS,
-            "error_relativo_medio": avg_rel_l2,
-            "error_relativo_mediana": median_rel_l2,
-            "time_training": avg_train_time,
-            "time_evaluation": avg_eval_time,
-            "num_params": int(params_final_flat.shape[0]),
+        methods = {
+            "vpinnR1": lambda p: vpinn_loss_R1(p, x_q, w_q_phys, V, F, TAU_VPINN, g, h),
+            "vpinnR2": lambda p: vpinn_loss_R2(p, x_q, w_q_phys, Vx_phys, F, TAU_VPINN, g, h),
         }
-        with open(nome_arquivo, "w") as fjson:
-            json.dump(results, fjson, indent=4)
 
-        nome_arquivo = output_dir / f"pontos_vpinn_1d_{tag}.json"
-        points = {
-            "x": X_TEST.flatten().tolist(),
-            "y_exact": np.asarray(Y_TEST).flatten().tolist(),
-            "y_nn": Y_nn_final.flatten().tolist(),
-            "network_weights": params_final_flat.tolist(),
-        }
-        with open(nome_arquivo, "w") as fjson:
-            json.dump(points, fjson, indent=4)
+        for method_tag, loss_builder in methods.items():
+            print("\n" + "=" * 20)
+            print(f"PROBLEMA=poisson_1d_unit_interval | METODO={method_tag} | L={L} hidden layers")
+            print("=" * 20)
 
-        nome_arquivo = output_dir / f"curva_treino_vpinn_1d_{tag}.json"
-        loss_trajectories = np.stack(loss_trajectories, axis=0)
-        err_trajectories = np.stack(err_trajectories, axis=0)
-        training_curve = {
-            "architecture": width,
-            "method": f"VPINN {method_tag[-2:]} - Legendre",
-            "problem": "poisson_1d",
-            "num_iterations": NUM_STEPS,
-            "num_runs": NUM_RUNS,
-            "steps": list(range(EVAL_FREQ, NUM_STEPS + 1, EVAL_FREQ)),
-            "l2_relative_error_per_run": err_trajectories.tolist(),
-            "loss_per_run": loss_trajectories.tolist(),
-            "l2_relative_error_mean": err_trajectories.mean(axis=0).tolist(),
-            "l2_relative_error_std": err_trajectories.std(axis=0).tolist(),
-        }
-        with open(nome_arquivo, "w") as fjson:
-            json.dump(training_curve, fjson, indent=4)
+            loss_trajectories, err_trajectories, l2_errors = [], [], []
+            acc_train_time, acc_eval_time = 0.0, 0.0
+            Y_nn_final, params_final_flat = None, None
 
-        print(f"Dados salvos para tag={tag}")
+            for run in range(NUM_RUNS):
+                run_key = random.fold_in(main_key, hash((method_tag, L, run)) % (2 ** 31))
+                params = init_mlp_params(run_key, width)
+
+                t0 = time.perf_counter()
+                params, loss_traj, err_traj = train_adam(
+                    params, loss_builder, NUM_STEPS, EVAL_FREQ, LEARNING_RATE, X_TEST, Y_TEST
+                )
+                jax.block_until_ready(params)
+                t_train = time.perf_counter() - t0
+                acc_train_time += t_train
+
+                loss_trajectories.append(loss_traj)
+                err_trajectories.append(err_traj)
+
+                t0 = time.perf_counter()
+                Y_nn = forward(X_TEST, params)
+                Y_nn.block_until_ready()
+                acc_eval_time += time.perf_counter() - t0
+
+                rel_l2 = float(jnp.linalg.norm(Y_nn - Y_TEST) / jnp.linalg.norm(Y_TEST))
+                l2_errors.append(rel_l2)
+                print(f"Run {run + 1}/{NUM_RUNS}: erro L2 relativo = {rel_l2:.6e} "
+                    f"(treino: {t_train:.2f}s)")
+
+                if run == NUM_RUNS - 1:
+                    Y_nn_final = np.asarray(Y_nn)
+                    flat_params, _ = jax.flatten_util.ravel_pytree(params)
+                    params_final_flat = np.asarray(flat_params)
+
+            avg_rel_l2 = float(np.mean(l2_errors))
+            median_rel_l2 = float(np.median(l2_errors))
+            avg_train_time = acc_train_time / NUM_RUNS
+            avg_eval_time = acc_eval_time / NUM_RUNS
+
+            print(f"--- Erro L2 relativo medio: {avg_rel_l2:.6e} | "
+                f"mediana: {median_rel_l2:.6e} ---")
+
+            tag = f"poisson_1d_{method_tag}_L{L}"
+
+            output_dir = Path("vpinn_poisson_1d")
+            output_dir.mkdir(exist_ok=True)
+
+            nome_arquivo = output_dir / f"dados_vpinn_1d_{tag}.json"
+            results = {
+                "architecture": width,
+                "num_hidden_layers": L,
+                "method": f"VPINN {method_tag[-2:]} - Legendre",
+                "problem": "poisson_1d",
+                "domain": [X_LEFT, X_RIGHT],
+                "n_test_functions": K_TEST_FUNCTIONS,
+                "n_quadrature_points": Q_QUADRATURE,
+                "tau": TAU_VPINN,
+                "learning_rate": LEARNING_RATE,
+                "num_iterations": NUM_STEPS,
+                "num_runs_avg": NUM_RUNS,
+                "error_relativo_medio": avg_rel_l2,
+                "error_relativo_mediana": median_rel_l2,
+                "time_training": avg_train_time,
+                "time_evaluation": avg_eval_time,
+                "num_params": int(params_final_flat.shape[0]),
+            }
+            with open(nome_arquivo, "w") as fjson:
+                json.dump(results, fjson, indent=4)
+
+            nome_arquivo = output_dir / f"pontos_vpinn_1d_{tag}.json"
+            points = {
+                "x": X_TEST.flatten().tolist(),
+                "y_exact": np.asarray(Y_TEST).flatten().tolist(),
+                "y_nn": Y_nn_final.flatten().tolist(),
+                "network_weights": params_final_flat.tolist(),
+            }
+            with open(nome_arquivo, "w") as fjson:
+                json.dump(points, fjson, indent=4)
+
+            nome_arquivo = output_dir / f"curva_treino_vpinn_1d_{tag}.json"
+            loss_trajectories = np.stack(loss_trajectories, axis=0)
+            err_trajectories = np.stack(err_trajectories, axis=0)
+            training_curve = {
+                "architecture": width,
+                "method": f"VPINN {method_tag[-2:]} - Legendre",
+                "problem": "poisson_1d",
+                "num_iterations": NUM_STEPS,
+                "num_runs": NUM_RUNS,
+                "steps": list(range(EVAL_FREQ, NUM_STEPS + 1, EVAL_FREQ)),
+                "l2_relative_error_per_run": err_trajectories.tolist(),
+                "loss_per_run": loss_trajectories.tolist(),
+                "l2_relative_error_mean": err_trajectories.mean(axis=0).tolist(),
+                "l2_relative_error_std": err_trajectories.std(axis=0).tolist(),
+            }
+            with open(nome_arquivo, "w") as fjson:
+                json.dump(training_curve, fjson, indent=4)
+
+            print(f"Dados salvos para tag={tag}")
 
 print("\nConcluido. Todos os arquivos JSON foram salvos no diretorio atual.")

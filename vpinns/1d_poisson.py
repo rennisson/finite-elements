@@ -76,7 +76,7 @@ K_TEST_FUNCTIONS = 60
 Q_QUADRATURE = 100
 NUM_STEPS = 50000
 EVAL_FREQ = 50
-NUM_RUNS = 5
+NUM_RUNS = 10
 HIDDEN_LAYER_CONFIGS = [1, 2, 3]
 
 NEURONS_PER_LAYER = [5, 10, 20, 40]
@@ -326,13 +326,13 @@ for L in HIDDEN_LAYER_CONFIGS:
         width = [1] + [NEURONS] * L + [1]
 
         methods = {
-            "vpinnR1": lambda p: vpinn_loss_R1(p, x_q, w_q_phys, V, F, TAU_VPINN, g, h),
-            "vpinnR2": lambda p: vpinn_loss_R2(p, x_q, w_q_phys, Vx_phys, F, TAU_VPINN, g, h),
+            "R1": lambda p: vpinn_loss_R1(p, x_q, w_q_phys, V, F, TAU_VPINN, g, h),
+            "R2": lambda p: vpinn_loss_R2(p, x_q, w_q_phys, Vx_phys, F, TAU_VPINN, g, h),
         }
 
         for method_tag, loss_builder in methods.items():
             print("\n" + "=" * 20)
-            print(f"PROBLEMA=poisson_1d_unit_interval | METODO={method_tag} | L={L} hidden layers")
+            print(f"PROBLEMA=poisson_1d | METODO={method_tag} | ARQ={width}")
             print("=" * 20)
 
             loss_trajectories, err_trajectories, l2_errors = [], [], []
@@ -377,12 +377,14 @@ for L in HIDDEN_LAYER_CONFIGS:
             print(f"--- Erro L2 relativo medio: {avg_rel_l2:.6e} | "
                 f"mediana: {median_rel_l2:.6e} ---")
 
-            tag = f"poisson_1d_{method_tag}_L{L}"
+            arch = [NEURONS] * L + [1]
+            arch_str = "_".join(map(str, width))
+            tag = f"poisson_1d_{method_tag}_{arch_str}"
 
             output_dir = Path("vpinn_poisson_1d")
             output_dir.mkdir(exist_ok=True)
 
-            nome_arquivo = output_dir / f"dados_vpinn_1d_{tag}.json"
+            nome_arquivo = output_dir / f"dados_vpinn_{tag}.json"
             results = {
                 "architecture": width,
                 "num_hidden_layers": L,
@@ -404,7 +406,7 @@ for L in HIDDEN_LAYER_CONFIGS:
             with open(nome_arquivo, "w") as fjson:
                 json.dump(results, fjson, indent=4)
 
-            nome_arquivo = output_dir / f"pontos_vpinn_1d_{tag}.json"
+            nome_arquivo = output_dir / f"pontos_vpinn_{tag}.json"
             points = {
                 "x": X_TEST.flatten().tolist(),
                 "y_exact": np.asarray(Y_TEST).flatten().tolist(),
@@ -414,7 +416,7 @@ for L in HIDDEN_LAYER_CONFIGS:
             with open(nome_arquivo, "w") as fjson:
                 json.dump(points, fjson, indent=4)
 
-            nome_arquivo = output_dir / f"curva_treino_vpinn_1d_{tag}.json"
+            nome_arquivo = output_dir / f"curva_treino_vpinn_{tag}.json"
             loss_trajectories = np.stack(loss_trajectories, axis=0)
             err_trajectories = np.stack(err_trajectories, axis=0)
             training_curve = {

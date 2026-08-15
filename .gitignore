@@ -76,3 +76,7 @@ wheels/
 .ipynb_checkpoints
 
 *.sh
+
+
+*.jpg
+*.png

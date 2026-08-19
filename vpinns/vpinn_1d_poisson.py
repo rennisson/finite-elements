@@ -90,7 +90,7 @@ NEURONS_PER_LAYER = [5, 10, 20, 40]
 LEARNING_RATE = 1e-3
 TAU_VPINN = 10.0
 
-LBFGS_HISTORY_SIZE = 200
+LBFGS_HISTORY_SIZE = 100
 LBFGS_TOL = 1e-12
 
 X_LEFT, X_RIGHT = 0.0, 1.0
@@ -283,7 +283,8 @@ def train_lbfgs(params, loss_fn, num_steps, eval_freq, X_test, Y_test,
 
         def inner_step(_, val):
             p_in, state_in = val
-            return lbfgs.update(p_in, state_in)
+            step = lbfgs.update(p_in, state_in)  # OptStep(params, state)
+            return step.params, step.state
 
         p_next, state_next = jax.lax.fori_loop(0, eval_freq, inner_step, (p, state))
 

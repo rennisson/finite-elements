@@ -31,6 +31,7 @@ import os
 import time
  
 from jax import random, config
+from pathlib import Path 
  
 config.update("jax_enable_x64", True)
 config.update("jax_default_matmul_precision", "highest")

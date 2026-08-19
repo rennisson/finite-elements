@@ -120,7 +120,7 @@ def update(opt_state, params):
 # 4. LOOP PRINCIPAL DE TREINAMENTO E MEDIÇÃO
 # ==========================================
 architectures = [
-    [1, 1], [2, 1],
+    # [1, 1], [2, 1],
     [5, 1], [10, 1], [20, 1], [40, 1],
     [5, 5, 1], [10, 10, 1], [20, 20, 1], [40, 40, 1],
     [5, 5, 5, 1], [10, 10, 10, 1], [20, 20, 20, 1], [40, 40, 40, 1]
@@ -162,7 +162,7 @@ for arch in architectures:
     def objective_lbfgs(p_flat, x_colloc):
         return loss_function(unflatten_fn(p_flat), x_colloc)
     
-    lbfgs_maxiter = 50000
+    lbfgs_maxiter = 20000
     lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=lbfgs_maxiter, history_size=200, tol=1e-12)
 
     # Captura o erro L2 a cada 10 passos.

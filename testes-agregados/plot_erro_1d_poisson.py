@@ -4,10 +4,10 @@ import json
 import glob
 import os
 
-PRINT_PAPER = True # Flag para printar ou nao os resultados do PAPER
+PRINT_PAPER = False # Flag para printar ou nao os resultados do PAPER
 
 # 1. Carregar dados do FEM da pasta correta
-fem_file = "FEM/fem_results_1d.json" 
+fem_file = "fem_poisson_1d/fem_results_1d.json" 
 if os.path.exists(fem_file):
     with open(fem_file, "r") as f:
         fem_data = json.load(f)
@@ -20,9 +20,11 @@ else:
 # Dicionários separados para armazenar os diferentes dados
 pinn_data = {}
 svpinn_data = {}
+vpinn_r1_data = {} # Dados para VPINN com R1
+vpinn_r2_data = {} # Dados para VPINN com R2
 pinn_data_paper = {}
 
-# Função auxiliar para ler JSONs de Redes Neurais (PINNs e SVPINNs)
+# Função auxiliar para ler JSONs de Redes Neurais
 def load_nn_data(file_pattern, data_dict):
     files = glob.glob(file_pattern)
     for file in files:
@@ -58,12 +60,15 @@ def load_nn_data(file_pattern, data_dict):
         except Exception as e:
             print(f"Erro ao ler {file}: {e}")
 
-# 2. Carregar e organizar dados das PINNs e SVPINNs
-load_nn_data("PINN/dados_pinn_1d_*.json", pinn_data)
-load_nn_data("SVPINN/dados_svpinn_1d_*.json", svpinn_data)
+# 2. Carregar e organizar dados das PINNs, SVPINNs e VPINNs (separando R1 e R2)
+load_nn_data("pinn_poisson_1d/dados_pinn_1d_*.json", pinn_data)
+load_nn_data("svpinn_poisson_1d/dados_svpinn_1d_*.json", svpinn_data)
+# Captura arquivos que contêm R1 ou R2 no nome
+load_nn_data("vpinn_poisson_1d/dados_vpinn_*_R1_*.json", vpinn_r1_data)
+load_nn_data("vpinn_poisson_1d/dados_vpinn_*_R2_*.json", vpinn_r2_data)
 
 # 3. Carregar dados estruturados do arquivo JSON extraído do Paper Original
-eval_file = "PINN/PINNs_1D_evaluation.json"
+eval_file = "poisson_1D_evaluation.json"
 if os.path.exists(eval_file):
     with open(eval_file, "r") as f:
         eval_data = json.load(f)
@@ -106,7 +111,7 @@ def get_color(layers_count):
 if len(fem_err) > 0:
     ax1.loglog(fem_err, fem_time, linestyle='-', color='steelblue', label='FEM', linewidth=2)
 
-# Plotar dados das PINNs (Linha tracejada + Marcador 'o')
+# PINNs (Linha tracejada + Marcador 'o')
 for layers, metrics in sorted(pinn_data.items()):
     sort_indices = np.argsort(metrics['err'])
     err_sorted = np.array(metrics['err'])[sort_indices]
@@ -116,7 +121,7 @@ for layers, metrics in sorted(pinn_data.items()):
     ax1.loglog(err_sorted, time_sorted, linestyle='--', marker='o', color=c, alpha=0.9, 
                label=f'{layers}-layer PINNs')
 
-# Plotar dados das SVPINNs (Linha traço-ponto + Marcador '^')
+# SVPINNs (Linha traço-ponto + Marcador 's')
 for layers, metrics in sorted(svpinn_data.items()):
     sort_indices = np.argsort(metrics['err'])
     err_sorted = np.array(metrics['err'])[sort_indices]
@@ -126,8 +131,27 @@ for layers, metrics in sorted(svpinn_data.items()):
     ax1.loglog(err_sorted, time_sorted, linestyle=':', marker='s', color=c, alpha=0.9, 
                label=f'{layers}-layer SVPINNs')
 
+# VPINNs R1 (Linha traço-ponto curta + Marcador 'D' diamante)
+for layers, metrics in sorted(vpinn_r1_data.items()):
+    sort_indices = np.argsort(metrics['err'])
+    err_sorted = np.array(metrics['err'])[sort_indices]
+    time_sorted = np.array(metrics['train_time'])[sort_indices]
+    
+    c = get_color(layers)
+    ax1.loglog(err_sorted, time_sorted, linestyle='-.', marker='D', color=c, alpha=0.9, 
+               label=f'{layers}-layer VPINNs (R1)')
+
+# VPINNs R2 (Linha traço-ponto curta + Marcador 'v' triângulo invertido)
+for layers, metrics in sorted(vpinn_r2_data.items()):
+    sort_indices = np.argsort(metrics['err'])
+    err_sorted = np.array(metrics['err'])[sort_indices]
+    time_sorted = np.array(metrics['train_time'])[sort_indices]
+    
+    c = get_color(layers)
+    ax1.loglog(err_sorted, time_sorted, linestyle='-.', marker='v', color=c, alpha=0.9, 
+               label=f'{layers}-layer VPINNs (R2)')
+
 if PRINT_PAPER:
-    # Plotar dados do Paper (Linha sólida + Marcador 'D')
     for layers, metrics in sorted(pinn_data_paper.items()):
         sort_indices = np.argsort(metrics['err'])
         err_sorted = np.array(metrics['err'])[sort_indices]
@@ -141,7 +165,7 @@ ax1.set_xlabel(r'Relative $\ell^2$ Error')
 ax1.set_ylabel('Total time to solve in sec')
 ax1.set_title(r'(a) Plot of time to solve FEM and train models versus $\ell^2$ relative error.')
 ax1.grid(True, which="both", ls="--", alpha=0.5)
-ax1.legend(fontsize=9) # Ajustado o tamanho da fonte da legenda para caber melhor
+ax1.legend(fontsize=8)
 
 # =====================================================================
 # ---- Gráfico 2b: Tempo de Avaliação vs Erro Relativo ----
@@ -149,7 +173,7 @@ ax1.legend(fontsize=9) # Ajustado o tamanho da fonte da legenda para caber melho
 if len(fem_err) > 0:
     ax2.loglog(fem_err, fem_time, linestyle='-', color='rosybrown', label='FEM solving time', linewidth=2)
 
-# Plotar dados das PINNs (Linha tracejada + Marcador 'o')
+# PINNs (Linha tracejada + Marcador 'o')
 for layers, metrics in sorted(pinn_data.items()):
     sort_indices = np.argsort(metrics['err'])
     err_sorted = np.array(metrics['err'])[sort_indices]
@@ -159,7 +183,7 @@ for layers, metrics in sorted(pinn_data.items()):
     ax2.loglog(err_sorted, eval_time_sorted, linestyle='--', marker='o', color=c, alpha=0.9, 
                label=f'{layers}-layer PINNs')
 
-# Plotar dados das SVPINNs (Linha traço-ponto + Marcador '^')
+# SVPINNs (Linha traço-ponto + Marcador 's')
 for layers, metrics in sorted(svpinn_data.items()):
     sort_indices = np.argsort(metrics['err'])
     err_sorted = np.array(metrics['err'])[sort_indices]
@@ -169,8 +193,27 @@ for layers, metrics in sorted(svpinn_data.items()):
     ax2.loglog(err_sorted, eval_time_sorted, linestyle=':', marker='s', color=c, alpha=0.9, 
                label=f'{layers}-layer SVPINNs')
 
+# VPINNs R1 (Linha traço-ponto curta + Marcador 'D' diamante)
+for layers, metrics in sorted(vpinn_r1_data.items()):
+    sort_indices = np.argsort(metrics['err'])
+    err_sorted = np.array(metrics['err'])[sort_indices]
+    eval_time_sorted = np.array(metrics['eval_time'])[sort_indices]
+    
+    c = get_color(layers)
+    ax2.loglog(err_sorted, eval_time_sorted, linestyle='-.', marker='D', color=c, alpha=0.9, 
+               label=f'{layers}-layer VPINNs (R1)')
+
+# VPINNs R2 (Linha traço-ponto curta + Marcador 'v' triângulo invertido)
+for layers, metrics in sorted(vpinn_r2_data.items()):
+    sort_indices = np.argsort(metrics['err'])
+    err_sorted = np.array(metrics['err'])[sort_indices]
+    eval_time_sorted = np.array(metrics['eval_time'])[sort_indices]
+    
+    c = get_color(layers)
+    ax2.loglog(err_sorted, eval_time_sorted, linestyle='-.', marker='v', color=c, alpha=0.9, 
+               label=f'{layers}-layer VPINNs (R2)')
+
 if PRINT_PAPER:
-    # Plotar dados do Paper (Linha sólida + Marcador 'D')
     for layers, metrics in sorted(pinn_data_paper.items()):
         sort_indices = np.argsort(metrics['err'])
         err_sorted = np.array(metrics['err'])[sort_indices]
@@ -184,9 +227,10 @@ ax2.set_xlabel(r'Relative $\ell^2$ Error')
 ax2.set_ylabel('Time in sec')
 ax2.set_title(r'(b) Plot of time to interpolate FEM and evaluate models versus relative error.')
 ax2.grid(True, which="both", ls="--", alpha=0.5)
-ax2.legend(fontsize=9)
+ax2.legend(fontsize=8)
 
 plt.tight_layout()
 
-plt.savefig('POISSON-1D-FEM-PINNs-SVPINNs.png', dpi=150)
+# O nome do arquivo salvo pode continuar o mesmo
+plt.savefig('POISSON-1D-ALL-MODELS.png', dpi=150)
 plt.show()

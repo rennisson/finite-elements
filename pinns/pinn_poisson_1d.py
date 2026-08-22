@@ -10,8 +10,10 @@ import time
 
 from jax import config
 from scipy.stats import qmc
+from pathlib import Path
 
 config.update("jax_enable_x64", True)
+config.update("jax_default_matmul_precision", "highest")
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 activation_function = jax.nn.tanh
@@ -30,15 +32,17 @@ def rhs(x):
 x_lower = 0
 x_upper = 1
 
-# Geração do Ground Truth com malha de 1000 pontos
-gt_file = "gt_poisson_1d_512.npz"
+# Geração do Ground Truth com malha de pontos
+gt_file = "gt_poisson_1d.json"
 if not os.path.exists(gt_file):
     raise FileNotFoundError(f"Arquivo '{gt_file}' não encontrado. Por favor, verifique o diretório.")
 
-gt_data = np.load(gt_file)
-# Assegurar que os arrays estão no formato (512, 1) como esperado pela PINN
-X_test = jnp.array(gt_data['x_eval']).reshape(-1, 1)
-Y_test = jnp.array(gt_data['u_eval']).reshape(-1, 1)
+with open(gt_file, "r") as f_in:
+    gt_data = json.load(f_in)
+
+# Assegurar que os arrays estão no formato de coluna, como esperado pela PINN
+X_test = jnp.array(gt_data['X']).reshape(-1, 1)
+Y_test = jnp.array(gt_data['U_true']).reshape(-1, 1)
 
 print(f"Ground truth carregado com {X_test.shape[0]} pontos.")
 
@@ -59,6 +63,7 @@ b2 = 0.999
 eps = 1e-08
 eps_root = 0.0
 epochs_adam = 15000
+eval_freq = 10
 
 # Inicializa o otimizador Adam
 optimizer = optax.adam(learning_rate, b1, b2, eps, eps_root)
@@ -116,9 +121,9 @@ def update(opt_state, params):
 # 4. LOOP PRINCIPAL DE TREINAMENTO E MEDIÇÃO
 # ==========================================
 architectures = [
-    [1, 1], [2, 1],
-    [5, 1], [10, 1], [20, 1], [40, 1], 
-    [5, 5, 1], [10, 10, 1], [20, 20, 1], [40, 40, 1], 
+    # [1, 1], [2, 1],
+    [5, 1], [10, 1], [20, 1], [40, 1],
+    [5, 5, 1], [10, 10, 1], [20, 20, 1], [40, 40, 1],
     [5, 5, 5, 1], [10, 10, 10, 1], [20, 20, 20, 1], [40, 40, 40, 1]
 ]
 
@@ -139,6 +144,11 @@ for arch in architectures:
     acc_eval_time = 0.0
     l2_errors = [] 
     
+    all_loss_trajectories = []       # (num_runs, lbfgs_maxiter // eval_freq)
+    all_l2_error_trajectories = []   # (num_runs, lbfgs_maxiter // eval_freq)
+    all_adam_loss_trajectories = []      # (num_runs, epochs_adam // eval_freq)
+    all_adam_l2_error_trajectories = []  # (num_runs, epochs_adam // eval_freq)
+
     Y_nn_final = None
     params_final_flat = None
 
@@ -155,7 +165,40 @@ for arch in architectures:
     def objective_lbfgs(p_flat, x_colloc):
         return loss_function(unflatten_fn(p_flat), x_colloc)
     
-    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=50000, history_size=50, tol=1e-12)
+    lbfgs_maxiter = 20000
+    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=lbfgs_maxiter, history_size=200, tol=1e-12)
+
+    # Captura o erro L2 a cada 10 passos.
+    @jax.jit
+    def lbfgs_segment_with_trajectory(p_flat, x_colloc):
+        init_state = lbfgs.init_state(p_flat, x_colloc=x_colloc)
+
+        # Reduz o tamanho do scan para iterar sobre blocos de passos
+        num_blocks = lbfgs_maxiter // eval_freq
+
+        def block_fn(carry, _):
+            p, state = carry
+            
+            # Loop interno: executa 10 iteracoes apenas atualizando os pesos (sem inferencia)
+            def inner_step(i, val):
+                p_in, state_in = val
+                p_out, state_out = lbfgs.update(p_in, state_in, x_colloc=x_colloc)
+                return p_out, state_out
+                
+            p_next, state_next = jax.lax.fori_loop(0, eval_freq, inner_step, (p, state))
+            
+            # Avaliacao: ocorre apenas 1x ao final do bloco de 10 passos
+            params_ = unflatten_fn(p_next)
+            Y_nn_step = forward(X_test, params_)
+            l2_err = jnp.linalg.norm(Y_nn_step - Y_test) / jnp.linalg.norm(Y_test)
+            
+            return (p_next, state_next), (state_next.value, l2_err)
+
+        (p_final, state_final), (loss_traj, err_traj) = jax.lax.scan(
+            block_fn, (p_flat, init_state), xs=None, length=num_blocks)
+            
+        return p_final, state_final, loss_traj, err_traj
+
 
     # --- LOOP DE MÉDIAS ---
     for run in range(num_runs):
@@ -173,10 +216,20 @@ for arch in architectures:
 
         opt_state = optimizer.init(params)
 
+        adam_loss_traj_run = []
+        adam_l2_traj_run = []
+
         t_start_adam = time.perf_counter()
         for e in range(epochs_adam):
             opt_state, params = update(opt_state, params)
-        
+
+            if (e + 1) % eval_freq == 0:
+                Y_nn_step = forward(X_test, params)
+                l2_err_step = jnp.linalg.norm(Y_nn_step - Y_test) / jnp.linalg.norm(Y_test)
+                loss_step = loss_function(params, X)
+                adam_loss_traj_run.append(float(loss_step))
+                adam_l2_traj_run.append(float(l2_err_step))
+
         # Para calcular a Loss final do Adam, geramos uma amostra
         sampler_eval = qmc.LatinHypercube(d=1)
         X_eval_adam = jnp.array(sampler_eval.random(n=n), dtype=jnp.float32)
@@ -186,6 +239,9 @@ for arch in architectures:
         acc_train_adam += t_adam
         print(f"Adam concluído em {t_adam:.2f}s | Loss: {loss_adam:.8e}")
 
+        all_adam_loss_trajectories.append(np.asarray(adam_loss_traj_run))
+        all_adam_l2_error_trajectories.append(np.asarray(adam_l2_traj_run))
+
         # 3. Refinamento L-BFGS
         params_flat, _ = jax.flatten_util.ravel_pytree(params)
         
@@ -194,16 +250,23 @@ for arch in architectures:
         X_lbfgs = jnp.array(sampler_lbfgs.random(n=n), dtype=jnp.float32)
         
         t_start_lbfgs = time.perf_counter()
-        params_flat, state = lbfgs.run(params_flat, x_colloc=X_lbfgs)
+        params_flat, state, loss_traj_run, err_traj_run = lbfgs_segment_with_trajectory(
+            params_flat, x_colloc=X_lbfgs
+        )
         
         params = unflatten_fn(params_flat).copy() 
         loss_lbfgs = loss_function(params, X_lbfgs).block_until_ready()
         t_lbfgs = time.perf_counter() - t_start_lbfgs
         
+        loss_trajectory_run = np.asarray(loss_traj_run)
+        l2_error_trajectory_run = np.asarray(err_traj_run)
+        all_loss_trajectories.append(loss_trajectory_run)
+        all_l2_error_trajectories.append(l2_error_trajectory_run)
+
         acc_train_lbfgs += t_lbfgs
         print(f"L-BFGS concluído em {t_lbfgs:.2f}s | Loss: {loss_lbfgs:.8e}")
 
-        # 4. Avaliação nos pontos Ground Truth (Malha de 1000 pontos)
+        # 4. Avaliação nos pontos Ground Truth
         t_start_eval = time.perf_counter()
         Y_nn = forward(X_test, params).reshape(X_test.shape)
         Y_nn.block_until_ready()
@@ -238,24 +301,63 @@ for arch in architectures:
     print(f"Tempo Médio Avaliação: {avg_eval_time:.5f}s")
     print("-"*20)
 
+    output_dir = Path("pinn_poisson_1d")
+    output_dir.mkdir(exist_ok=True)
+
     # 6. Salvar Dados (.json)
     results = {
         'architecture': width,
         'num_hidden_layers': len(width) - 1,
         'epochs_adam': epochs_adam,
+        'lbfgs_maxiter': lbfgs_maxiter,
         'num_runs_avg': num_runs,
         'error_relativo_medio': avg_rel_l2, 
         'error_relativo_mediana': median_rel_l2, 
         'time_training': avg_train_adam,
         'time_training_lbfgs': avg_train_total,
         'time_evaluation': avg_eval_time,
-        'num_params': int(len(params_final_flat)),
+        'num_params': int(len(params_final_flat))
+    }
+
+    nome_arquivo = output_dir / f'dados_pinn_1d_{arch_str}.json' 
+    with open(nome_arquivo, 'w') as f:
+        json.dump(results, f, indent=4)
+        
+    points = {
+        'x': X_test.flatten().tolist(),
         'y_nn': Y_nn_final.tolist(),             
         'network_weights': params_final_flat.tolist() 
     }
 
-    nome_arquivo = f'dados_pinn_1d_{arch_str}.json' 
+    nome_arquivo = output_dir / f'pontos_pinn_1d_{arch_str}.json' 
     with open(nome_arquivo, 'w') as f:
-        json.dump(results, f, indent=4)
+        json.dump(points, f, indent=4)
+
+    all_loss_trajectories = np.stack(all_loss_trajectories, axis=0)
+    all_l2_error_trajectories = np.stack(all_l2_error_trajectories, axis=0)
+    all_adam_loss_trajectories = np.stack(all_adam_loss_trajectories, axis=0)
+    all_adam_l2_error_trajectories = np.stack(all_adam_l2_error_trajectories, axis=0)
+    
+    training_curve = {
+        'architecture': width,
+        'method': 'PINN',
+        'epochs_adam': epochs_adam,
+        'lbfgs_maxiter': lbfgs_maxiter,
+        'num_runs': num_runs,
+        'steps_adam': list(range(eval_freq, epochs_adam + 1, eval_freq)),
+        'l2_relative_error_per_run_adam': all_adam_l2_error_trajectories.tolist(),
+        'loss_per_run_adam': all_adam_loss_trajectories.tolist(),
+        'l2_relative_error_mean_adam': all_adam_l2_error_trajectories.mean(axis=0).tolist(),
+        'l2_relative_error_std_adam': all_adam_l2_error_trajectories.std(axis=0).tolist(),
+        'steps': list(range(10, lbfgs_maxiter + 1, 10)),
+        'l2_relative_error_per_run': all_l2_error_trajectories.tolist(),
+        'loss_per_run': all_loss_trajectories.tolist(),
+        'l2_relative_error_mean': all_l2_error_trajectories.mean(axis=0).tolist(),
+        'l2_relative_error_std': all_l2_error_trajectories.std(axis=0).tolist(),
+    }
+
+    nome_arquivo = output_dir / f'curva_treino_pinn_1d_{arch_str}.json'
+    with open(nome_arquivo, 'w') as f:
+        json.dump(training_curve, f, indent=4)
     
     print(f"Dados salvos como: {nome_arquivo}\n")

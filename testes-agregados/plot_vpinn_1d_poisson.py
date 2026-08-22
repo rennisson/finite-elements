@@ -3,10 +3,14 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-def plot_results():
-    # Definição das arquiteturas testadas
+def plot_results(method_tag="R1"):
+    """
+    Gera o plot iterando sobre as arquiteturas geradas por vpinn_1d_poisson_unit_interval.py.
+    O method_tag pode ser "R1" ou "R2".
+    """
+    
+    # Definição das arquiteturas baseadas nos loops L e NEURONS_PER_LAYER
     architectures = [
-        [1, 1], [2, 1],
         [5, 1], [10, 1], [20, 1], [40, 1],
         [5, 5, 1], [10, 10, 1], [20, 20, 1], [40, 40, 1],
         [5, 5, 5, 1], [10, 10, 10, 1], [20, 20, 20, 1], [40, 40, 40, 1]
@@ -38,7 +42,10 @@ def plot_results():
     for arch in architectures:
         width = [1] + arch
         arch_str = "_".join(map(str, width))
-        nome_arquivo = f'SVPINN/pontos_svpinn_1d_{arch_str}.json'
+        
+        # Cria a tag usada para nomear os arquivos no script VPINN
+        tag = f"poisson_1d_{method_tag}_{arch_str}"
+        nome_arquivo = f'vpinn_poisson_1d/pontos_vpinn_{tag}.json'
         
         if os.path.exists(nome_arquivo):
             with open(nome_arquivo, 'r') as f:
@@ -48,14 +55,14 @@ def plot_results():
             y_pinn = pinn_data['y_nn']
             
             # Formatando o label no estilo PINN [camadas]
-            label_name = f"PINN {arch}"
+            label_name = f"VPINN {method_tag} {arch}"
             
             # Plotar a aproximação usando linhas mais finas (linewidth=1.2)
             ax.plot(x_pinn, y_pinn, linewidth=1.2, label=label_name)
         else:
             print(f"Arquivo não encontrado: {nome_arquivo}")
 
-    # 3. Formatação do gráfico no estilo da imagem 'image_ac7ac6.png'
+    # 3. Formatação do gráfico no estilo da imagem original
     ax.set_xlabel('x')
     ax.set_ylabel('u(x)')
     
@@ -67,10 +74,12 @@ def plot_results():
     plt.tight_layout(rect=[0, 0, 0.9, 1])
     
     # Salvar e mostrar o gráfico
-    output_img = 'POISSON-1D-SVPINN-COMPARATIVO.png'
+    output_img = f'POISSON-1D-VPINN-{method_tag}-COMPARATIVO.png'
     plt.savefig(output_img, dpi=300, bbox_inches='tight')
     print(f"Gráfico gerado e salvo como: {output_img}")
     plt.show()
 
 if __name__ == "__main__":
-    plot_results()
+    # Gerando as visualizações para as metodologias R1 e R2 calculadas pelo modelo
+    plot_results(method_tag="R1")
+    plot_results(method_tag="R2")

@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import os
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 import jax
 import jax.numpy as jnp
@@ -12,9 +11,11 @@ from scipy.stats import qmc
 import numpy as np
 import time
 import json
+from pathlib import Path
 
-# Forçar uso de float64 para maior precisão 
 config.update("jax_enable_x64", True)
+config.update("jax_default_matmul_precision", "highest")
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 # ==========================================
 # 1. CARREGAMENTO DO GROUND TRUTH E PDE
@@ -30,6 +31,10 @@ X_mesh_gt = jnp.array(gt_data["X"])
 Y_mesh_gt = jnp.array(gt_data["Y"])
 U_true_gt = jnp.array(gt_data["U_true"])
 
+# Pontos e valores de referência achatados, usados nas avaliações de trajetória
+xy_points_gt = jnp.stack([X_mesh_gt.ravel(), Y_mesh_gt.ravel()], axis=-1)
+U_true_flat = U_true_gt.ravel()
+
 print(f"Ground truth carregado. Shape da malha de avaliação: {X_mesh_gt.shape}")
 
 def pde_rhs(x, y):
@@ -41,7 +46,9 @@ def pde_rhs(x, y):
 # ==========================================
 activation_function = jax.nn.tanh
 lr = 1e-3
-epochs_adam = 20000
+epochs_adam = 15000
+lbfgs_maxiter = 20000
+eval_freq = 10
 num_runs = 10
 main_key = jax.random.PRNGKey(42)
 
@@ -124,6 +131,9 @@ architectures = [
     [120,120,120,120,120,1]
 ]
 
+output_dir = Path("pinn_poisson_2d")
+output_dir.mkdir(exist_ok=True)
+
 for arch in architectures:
     width = [2] + arch # Adiciona a dimensão de entrada (2)
     arch_str = "_".join(map(str, width))
@@ -136,6 +146,11 @@ for arch in architectures:
     acc_train_lbfgs = 0.0
     acc_eval_time = 0.0
     l2_errors = [] 
+
+    all_loss_trajectories = []           # (num_runs, lbfgs_maxiter // eval_freq)
+    all_l2_error_trajectories = []       # (num_runs, lbfgs_maxiter // eval_freq)
+    all_adam_loss_trajectories = []      # (num_runs, epochs_adam // eval_freq)
+    all_adam_l2_error_trajectories = []  # (num_runs, epochs_adam // eval_freq)
     
     U_nn_final = None
     params_final_flat = None
@@ -154,7 +169,37 @@ for arch in architectures:
     def objective_lbfgs(p_flat, xy_interior, xy_x0, xy_x1, xy_y0, xy_y1):
         return loss_function(unflatten_fn(p_flat), xy_interior, xy_x0, xy_x1, xy_y0, xy_y1)
     
-    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=50000, history_size=50, tol=1e-12)
+    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=lbfgs_maxiter, history_size=50, tol=1e-12)
+
+    # Captura o erro L2 a cada eval_freq passos de L-BFGS (mesmo padrão do 1D)
+    @jax.jit
+    def lbfgs_segment_with_trajectory(p_flat, xy_interior, xy_x0, xy_x1, xy_y0, xy_y1):
+        init_state = lbfgs.init_state(p_flat, xy_interior=xy_interior, xy_x0=xy_x0,
+                                       xy_x1=xy_x1, xy_y0=xy_y0, xy_y1=xy_y1)
+
+        num_blocks = lbfgs_maxiter // eval_freq
+
+        def block_fn(carry, _):
+            p, state = carry
+
+            def inner_step(i, val):
+                p_in, state_in = val
+                p_out, state_out = lbfgs.update(p_in, state_in, xy_interior=xy_interior,
+                                                 xy_x0=xy_x0, xy_x1=xy_x1, xy_y0=xy_y0, xy_y1=xy_y1)
+                return p_out, state_out
+
+            p_next, state_next = jax.lax.fori_loop(0, eval_freq, inner_step, (p, state))
+
+            params_ = unflatten_fn(p_next)
+            u_nn_step = forward(xy_points_gt, params_).flatten()
+            l2_err = jnp.linalg.norm(u_nn_step - U_true_flat) / jnp.linalg.norm(U_true_flat)
+
+            return (p_next, state_next), (state_next.value, l2_err)
+
+        (p_final, state_final), (loss_traj, err_traj) = jax.lax.scan(
+            block_fn, (p_flat, init_state), xs=None, length=num_blocks)
+
+        return p_final, state_final, loss_traj, err_traj
 
     # --- LOOP DE EXECUÇÕES (RUNS) ---
     for run in range(num_runs):
@@ -171,11 +216,21 @@ for arch in architectures:
 
         opt_state = optimizer.init(params)
 
+        adam_loss_traj_run = []
+        adam_l2_traj_run = []
+
         # 2. Treinamento Adam
         t_start_adam = time.perf_counter()
         for e in range(epochs_adam):
             xy_int, x0, x1, y0, y1 = generate_lhs_points(N_f, N_g)
             opt_state, params = update(opt_state, params, xy_int, x0, x1, y0, y1)
+
+            if (e + 1) % eval_freq == 0:
+                u_nn_step = forward(xy_points_gt, params).flatten()
+                l2_err_step = jnp.linalg.norm(u_nn_step - U_true_flat) / jnp.linalg.norm(U_true_flat)
+                loss_step = loss_function(params, xy_int, x0, x1, y0, y1)
+                adam_loss_traj_run.append(float(loss_step))
+                adam_l2_traj_run.append(float(l2_err_step))
         
         t_adam = time.perf_counter() - t_start_adam
         acc_train_adam += t_adam
@@ -185,14 +240,18 @@ for arch in architectures:
         loss_adam = loss_function(params, xy_int, x0, x1, y0, y1).block_until_ready()
         print(f"Adam concluído em {t_adam:.2f}s | Loss: {loss_adam:.8e}")
 
+        all_adam_loss_trajectories.append(np.asarray(adam_loss_traj_run))
+        all_adam_l2_error_trajectories.append(np.asarray(adam_l2_traj_run))
+
         # 3. Refinamento L-BFGS
         params_flat, _ = jax.flatten_util.ravel_pytree(params)
         
         xy_int_lbfgs, x0_lbfgs, x1_lbfgs, y0_lbfgs, y1_lbfgs = generate_lhs_points(N_f, N_g)
         
         t_start_lbfgs = time.perf_counter()
-        params_flat, state = lbfgs.run(params_flat, xy_interior=xy_int_lbfgs, 
-                                       xy_x0=x0_lbfgs, xy_x1=x1_lbfgs, xy_y0=y0_lbfgs, xy_y1=y1_lbfgs)
+        params_flat, state, loss_traj_run, err_traj_run = lbfgs_segment_with_trajectory(
+            params_flat, xy_int_lbfgs, x0_lbfgs, x1_lbfgs, y0_lbfgs, y1_lbfgs
+        )
         t_lbfgs = time.perf_counter() - t_start_lbfgs
         acc_train_lbfgs += t_lbfgs
         
@@ -200,10 +259,14 @@ for arch in architectures:
         loss_lbfgs = loss_function(params, xy_int_lbfgs, x0_lbfgs, x1_lbfgs, y0_lbfgs, y1_lbfgs).block_until_ready()
         print(f"L-BFGS concluído em {t_lbfgs:.2f}s | Loss: {loss_lbfgs:.8e}")
 
+        loss_trajectory_run = np.asarray(loss_traj_run)
+        l2_error_trajectory_run = np.asarray(err_traj_run)
+        all_loss_trajectories.append(loss_trajectory_run)
+        all_l2_error_trajectories.append(l2_error_trajectory_run)
+
         # 4. Avaliação e Erro L2
         t_start_eval = time.perf_counter()
-        xy_points = jnp.stack([X_mesh_gt.ravel(), Y_mesh_gt.ravel()], axis=-1)
-        u_nn_flat = forward(xy_points, params)
+        u_nn_flat = forward(xy_points_gt, params)
         u_nn = u_nn_flat.reshape(X_mesh_gt.shape)
         u_nn.block_until_ready()
         t_eval = time.perf_counter() - t_start_eval
@@ -234,24 +297,61 @@ for arch in architectures:
     print(f"Tempo Médio Treino Total: {avg_train_total:.3f}s")
     print("-" * 30)
 
-    # 5. Salvar Dados (.json) compatível com o formato 1D
+    # 5. Salvar Dados (.json) - mesma estrutura de 3 arquivos usada no 1D
     results = {
         'architecture': width,
         'num_hidden_layers': len(width) - 1,
         'epochs_adam': epochs_adam,
+        'lbfgs_maxiter': lbfgs_maxiter,
         'num_runs_avg': num_runs,
         'error_relativo_medio': avg_rel_l2, 
         'error_relativo_mediana': median_rel_l2, 
         'time_training': avg_train_adam,
         'time_training_lbfgs': avg_train_total,
         'time_evaluation': avg_eval_time,
-        'num_params': int(len(params_final_flat)),
-        'y_nn': U_nn_final.tolist(),             
-        'network_weights': params_final_flat.tolist() 
+        'num_params': int(len(params_final_flat))
     }
 
-    nome_arquivo = f'dados_pinn_2d_{arch_str}.json' 
+    nome_arquivo = output_dir / f'dados_pinn_2d_{arch_str}.json'
     with open(nome_arquivo, 'w', encoding='utf-8') as f:
         json.dump(results, f, indent=4)
-    
+
+    points = {
+        'x': X_mesh_gt.ravel().tolist(),
+        'y': Y_mesh_gt.ravel().tolist(),
+        'u_nn': U_nn_final.ravel().tolist(),
+        'network_weights': params_final_flat.tolist()
+    }
+
+    nome_arquivo = output_dir / f'pontos_pinn_2d_{arch_str}.json'
+    with open(nome_arquivo, 'w', encoding='utf-8') as f:
+        json.dump(points, f, indent=4)
+
+    all_loss_trajectories = np.stack(all_loss_trajectories, axis=0)
+    all_l2_error_trajectories = np.stack(all_l2_error_trajectories, axis=0)
+    all_adam_loss_trajectories = np.stack(all_adam_loss_trajectories, axis=0)
+    all_adam_l2_error_trajectories = np.stack(all_adam_l2_error_trajectories, axis=0)
+
+    training_curve = {
+        'architecture': width,
+        'method': 'PINN',
+        'epochs_adam': epochs_adam,
+        'lbfgs_maxiter': lbfgs_maxiter,
+        'num_runs': num_runs,
+        'steps_adam': list(range(eval_freq, epochs_adam + 1, eval_freq)),
+        'l2_relative_error_per_run_adam': all_adam_l2_error_trajectories.tolist(),
+        'loss_per_run_adam': all_adam_loss_trajectories.tolist(),
+        'l2_relative_error_mean_adam': all_adam_l2_error_trajectories.mean(axis=0).tolist(),
+        'l2_relative_error_std_adam': all_adam_l2_error_trajectories.std(axis=0).tolist(),
+        'steps': list(range(eval_freq, lbfgs_maxiter + 1, eval_freq)),
+        'l2_relative_error_per_run': all_l2_error_trajectories.tolist(),
+        'loss_per_run': all_loss_trajectories.tolist(),
+        'l2_relative_error_mean': all_l2_error_trajectories.mean(axis=0).tolist(),
+        'l2_relative_error_std': all_l2_error_trajectories.std(axis=0).tolist(),
+    }
+
+    nome_arquivo = output_dir / f'curva_treino_pinn_2d_{arch_str}.json'
+    with open(nome_arquivo, 'w', encoding='utf-8') as f:
+        json.dump(training_curve, f, indent=4)
+
     print(f"Dados salvos como: {nome_arquivo}\n")

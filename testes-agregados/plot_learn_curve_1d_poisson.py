@@ -42,14 +42,14 @@ def plot_all_training_curves(svpinn_dir, pinn_dir, vpinn_dir, output_path):
             "dir": vpinn_dir,
             "color": "orange",
             "ls": "--",
-            "label": "VPINN R1 (Adam, 50k passos)",
+            "label": "VPINN R1 (L-BFGS, 20k passos)",
             "file_pattern": "curva_treino_vpinn_poisson_1d_R1_{}.json" 
         },
         "VPINN_R2": {
             "dir": vpinn_dir,
             "color": "purple",
             "ls": "--",
-            "label": "VPINN R2 (Adam, 50k passos)",
+            "label": "VPINN R2 (L-BFGS, 20k passos)",
             "file_pattern": "curva_treino_vpinn_poisson_1d_R2_{}.json" 
         }
     }
@@ -98,6 +98,19 @@ def plot_all_training_curves(svpinn_dir, pinn_dir, vpinn_dir, output_path):
             err_mean = np.asarray(data["l2_relative_error_mean"])
             err_std = np.asarray(data["l2_relative_error_std"])
             num_runs = data.get("num_runs", err_per_run.shape[0])
+
+            # Se houver trajetória do Adam (ex: PINN), prefixa a curva com
+            # os passos do Adam, deslocando os passos do L-BFGS para que a
+            # curva fique contínua (Adam seguido de L-BFGS).
+            if "steps_adam" in data:
+                epochs_adam = data.get("epochs_adam", 0)
+                steps_adam = np.asarray(data["steps_adam"])
+                err_per_run_adam = np.asarray(data["l2_relative_error_per_run_adam"])
+                err_mean_adam = np.asarray(data["l2_relative_error_mean_adam"])
+
+                steps = np.concatenate([steps_adam, epochs_adam + steps])
+                err_per_run = np.concatenate([err_per_run_adam, err_per_run], axis=1)
+                err_mean = np.concatenate([err_mean_adam, err_mean])
             
             # Plotar runs individuais com transparência
             for run in range(num_runs):

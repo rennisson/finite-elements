@@ -63,6 +63,7 @@ b2 = 0.999
 eps = 1e-08
 eps_root = 0.0
 epochs_adam = 15000
+eval_freq = 10
 
 # Inicializa o otimizador Adam
 optimizer = optax.adam(learning_rate, b1, b2, eps, eps_root)
@@ -145,6 +146,8 @@ for arch in architectures:
     
     all_loss_trajectories = []       # (num_runs, lbfgs_maxiter // eval_freq)
     all_l2_error_trajectories = []   # (num_runs, lbfgs_maxiter // eval_freq)
+    all_adam_loss_trajectories = []      # (num_runs, epochs_adam // eval_freq)
+    all_adam_l2_error_trajectories = []  # (num_runs, epochs_adam // eval_freq)
 
     Y_nn_final = None
     params_final_flat = None
@@ -169,8 +172,7 @@ for arch in architectures:
     @jax.jit
     def lbfgs_segment_with_trajectory(p_flat, x_colloc):
         init_state = lbfgs.init_state(p_flat, x_colloc=x_colloc)
-        
-        eval_freq = 10
+
         # Reduz o tamanho do scan para iterar sobre blocos de passos
         num_blocks = lbfgs_maxiter // eval_freq
 
@@ -214,10 +216,20 @@ for arch in architectures:
 
         opt_state = optimizer.init(params)
 
+        adam_loss_traj_run = []
+        adam_l2_traj_run = []
+
         t_start_adam = time.perf_counter()
         for e in range(epochs_adam):
             opt_state, params = update(opt_state, params)
-        
+
+            if (e + 1) % eval_freq == 0:
+                Y_nn_step = forward(X_test, params)
+                l2_err_step = jnp.linalg.norm(Y_nn_step - Y_test) / jnp.linalg.norm(Y_test)
+                loss_step = loss_function(params, X)
+                adam_loss_traj_run.append(float(loss_step))
+                adam_l2_traj_run.append(float(l2_err_step))
+
         # Para calcular a Loss final do Adam, geramos uma amostra
         sampler_eval = qmc.LatinHypercube(d=1)
         X_eval_adam = jnp.array(sampler_eval.random(n=n), dtype=jnp.float32)
@@ -226,6 +238,9 @@ for arch in architectures:
         t_adam = time.perf_counter() - t_start_adam
         acc_train_adam += t_adam
         print(f"Adam concluído em {t_adam:.2f}s | Loss: {loss_adam:.8e}")
+
+        all_adam_loss_trajectories.append(np.asarray(adam_loss_traj_run))
+        all_adam_l2_error_trajectories.append(np.asarray(adam_l2_traj_run))
 
         # 3. Refinamento L-BFGS
         params_flat, _ = jax.flatten_util.ravel_pytree(params)
@@ -320,6 +335,8 @@ for arch in architectures:
 
     all_loss_trajectories = np.stack(all_loss_trajectories, axis=0)
     all_l2_error_trajectories = np.stack(all_l2_error_trajectories, axis=0)
+    all_adam_loss_trajectories = np.stack(all_adam_loss_trajectories, axis=0)
+    all_adam_l2_error_trajectories = np.stack(all_adam_l2_error_trajectories, axis=0)
     
     training_curve = {
         'architecture': width,
@@ -327,6 +344,11 @@ for arch in architectures:
         'epochs_adam': epochs_adam,
         'lbfgs_maxiter': lbfgs_maxiter,
         'num_runs': num_runs,
+        'steps_adam': list(range(eval_freq, epochs_adam + 1, eval_freq)),
+        'l2_relative_error_per_run_adam': all_adam_l2_error_trajectories.tolist(),
+        'loss_per_run_adam': all_adam_loss_trajectories.tolist(),
+        'l2_relative_error_mean_adam': all_adam_l2_error_trajectories.mean(axis=0).tolist(),
+        'l2_relative_error_std_adam': all_adam_l2_error_trajectories.std(axis=0).tolist(),
         'steps': list(range(10, lbfgs_maxiter + 1, 10)),
         'l2_relative_error_per_run': all_l2_error_trajectories.tolist(),
         'loss_per_run': all_loss_trajectories.tolist(),

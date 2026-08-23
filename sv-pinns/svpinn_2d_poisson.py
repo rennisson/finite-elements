@@ -23,8 +23,10 @@ import time
 
 from jax import random, config
 from scipy.stats import qmc
+from pathlib import Path
 
 config.update("jax_enable_x64", True)
+config.update("jax_default_matmul_precision", "highest")
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 activation_function = jax.nn.tanh
@@ -453,7 +455,10 @@ for arch in architectures:
     # cada 10 passos); lambda permanece fixo em todos os blocos.
     # ---------------------------------------------------------
     @jax.jit
-    def lbfgs_segment_with_trajectory(p_flat, state, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam):
+    def lbfgs_segment_with_trajectory(p_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam):
+        state = lbfgs.init_state(p_flat, phi_samples_run=phi_samples_run,
+                                  xy_x0=xy_x0, xy_x1=xy_x1, xy_y0=xy_y0, xy_y1=xy_y1, lam=lam)
+
         eval_freq = 10
         num_blocks = lbfgs_maxiter // eval_freq
 
@@ -508,18 +513,15 @@ for arch in architectures:
         lam = compute_lambda(params, xy_grid, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1)
 
         # 5. Otimização via L-BFGS, de uma unica vez, por lbfgs_maxiter passos (lambda fixo)
-        state = lbfgs.init_state(params_flat, phi_samples_run=phi_samples_run,
-                                  xy_x0=xy_x0, xy_x1=xy_x1, xy_y0=xy_y0, xy_y1=xy_y1, lam=lam)
-
         t_start_lbfgs = time.perf_counter()
 
         params_flat, state, run_loss_traj, run_l2_traj = lbfgs_segment_with_trajectory(
-            params_flat, state, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam)
+            params_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam)
         run_loss_traj = np.asarray(run_loss_traj)
         run_l2_traj = np.asarray(run_l2_traj)
 
         params = unflatten_fn(params_flat)
-        loss_lbfgs = run_loss_traj[-1]
+        loss_lbfgs = objective_lbfgs(params_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam).block_until_ready()
         t_lbfgs = time.perf_counter() - t_start_lbfgs
 
         l2_error_runs.append(run_l2_traj)
@@ -537,7 +539,9 @@ for arch in architectures:
         t_eval = time.perf_counter() - t_start_eval
         acc_eval_time += t_eval
 
-        rel_l2_error = run_l2_traj[-1]
+        norma_erro = jnp.linalg.norm(u_nn - U_true_gt)
+        norma_exata = jnp.linalg.norm(U_true_gt)
+        rel_l2_error = float(norma_erro / norma_exata)
         l2_errors.append(rel_l2_error)
         print(f"Erro L2 Relativo (Run {run + 1}): {rel_l2_error:.8e}")
 
@@ -557,6 +561,9 @@ for arch in architectures:
     print(f"Tempo Médio Avaliação: {avg_eval_time:.5f}s")
     print("-" * 30)
 
+    output_dir = Path("svpinn_poisson_2d")
+    output_dir.mkdir(exist_ok=True)
+
     results = {
         'architecture': width,
         'num_hidden_layers': len(width) - 1,
@@ -572,18 +579,18 @@ for arch in architectures:
         'num_params': int(len(params_final_flat))
     }
 
-    nome_arquivo = f'dados_svpinn_2d_{arch_str}.json'
+    nome_arquivo = output_dir / f'dados_svpinn_2d_{arch_str}.json'
     with open(nome_arquivo, 'w', encoding='utf-8') as f:
         json.dump(results, f, indent=4)
 
     points = {
-        'x_mesh': np.asarray(X_mesh_gt).tolist(),
-        'y_mesh': np.asarray(Y_mesh_gt).tolist(),
-        'u_nn': U_nn_final.tolist(),
+        'x': X_mesh_gt.ravel().tolist(),
+        'y': Y_mesh_gt.ravel().tolist(),
+        'u_nn': U_nn_final.ravel().tolist(),
         'network_weights': params_final_flat.tolist()
     }
 
-    nome_arquivo_pontos = f'pontos_svpinn_2d_{arch_str}.json'
+    nome_arquivo_pontos = output_dir / f'pontos_svpinn_2d_{arch_str}.json'
     with open(nome_arquivo_pontos, 'w', encoding='utf-8') as f:
         json.dump(points, f, indent=4)
 
@@ -609,7 +616,7 @@ for arch in architectures:
     }
 
     # Salvo como 'curva_treino_svpinn_2d_*.json' para ser iterado no script gerador do plot
-    nome_arquivo_curva = f'curva_treino_svpinn_2d_{arch_str}.json'
+    nome_arquivo_curva = output_dir / f'curva_treino_svpinn_2d_{arch_str}.json'
     with open(nome_arquivo_curva, 'w', encoding='utf-8') as f:
         json.dump(training_curve, f, indent=4)
 

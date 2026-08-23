@@ -1,7 +1,7 @@
 import numpy as np
 import json
 
-def generate_analytical_solution_2d(num_points=2000, filename="gt_poisson_2d.json"):
+def generate_analytical_solution_2d(num_points=1024, filename="gt_poisson_2d.json"):
     """
     Gera e salva os pontos de avaliação e a solução analítica exata 
     para a equação de Poisson 2D do artigo.
@@ -38,4 +38,4 @@ def generate_analytical_solution_2d(num_points=2000, filename="gt_poisson_2d.jso
     print(f"Arquivo '{filename}' gerado com sucesso!")
 
 if __name__ == "__main__":
-    generate_analytical_solution_2d(num_points=2000)
+    generate_analytical_solution_2d(num_points=1024)

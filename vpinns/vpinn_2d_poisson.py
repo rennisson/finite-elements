@@ -79,12 +79,12 @@ activation_function = jax.nn.tanh
 K_TEST_FUNCTIONS = 20
 Q_QUADRATURE = 40
 N_G_BOUNDARY = 250          # pontos de colocacao por aresta (mesmo N_g de pinn_poisson_2d.py)
-NUM_STEPS = 50000
+NUM_STEPS = 35000
 EVAL_FREQ = 50
 NUM_RUNS = 10
-HIDDEN_LAYER_CONFIGS = [1, 2, 3]
+HIDDEN_LAYER_CONFIGS = [2, 3, 4, 5]
 
-NEURONS_PER_LAYER = [5, 10, 20, 40]
+NEURONS_PER_LAYER = [20, 60]
 # Nao usada para treinar (L-BFGS nao tem taxa de aprendizagem fixa);
 # mantida apenas para preservar a estrutura do JSON de saida ("dados_...").
 LEARNING_RATE = 1e-3

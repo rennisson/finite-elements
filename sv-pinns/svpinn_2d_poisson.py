@@ -392,7 +392,6 @@ def compute_lambda(params, xy_grid, phi_samples, xy_x0, xy_x1, xy_y0, xy_y1, eps
 # 7. TREINAMENTO DAS SV-PINNs (SOMENTE L-BFGS, SEM ADAM)
 # ==========================================
 architectures = [
-    [20, 1], [60, 1],
     [20, 20, 1], [60, 60, 1],
     [20, 20, 20, 1], [60, 60, 60, 1],
     [20, 20, 20, 20, 1], [60, 60, 60, 60, 1],
@@ -404,7 +403,7 @@ n_colloc = 128              # pontos de colocação por eixo = grid da DST-I (Ta
 N_test_functions = 25000    # numero de funcoes teste amostradas (Table A.8, caso 2D)
 n_g_boundary = 250          # pontos de contorno por aresta (N_g de pinn_poisson_2d.py)
 num_runs = 3                 # 3 repeticoes, como no protocolo experimental do paper (Sec. 6)
-lbfgs_maxiter = 5000          # SV-PINNs treinadas por L-BFGS por 5,000 passos (Sec. 6)
+lbfgs_maxiter = 35000          # SV-PINNs treinadas por L-BFGS por 5,000 passos (Sec. 6)
 
 main_key = jax.random.PRNGKey(42)
 

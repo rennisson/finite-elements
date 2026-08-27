@@ -360,6 +360,8 @@ for L in HIDDEN_LAYER_CONFIGS:
                 loss_trajectories.append(loss_traj)
                 err_trajectories.append(err_traj)
 
+                _ = forward(X_TEST, params).block_until_ready()
+
                 t0 = time.perf_counter()
                 Y_nn = forward(X_TEST, params)
                 Y_nn.block_until_ready()

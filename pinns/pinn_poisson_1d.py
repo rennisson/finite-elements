@@ -267,6 +267,8 @@ for arch in architectures:
         print(f"L-BFGS concluído em {t_lbfgs:.2f}s | Loss: {loss_lbfgs:.8e}")
 
         # 4. Avaliação nos pontos Ground Truth
+        _ = forward(X_test, params).block_until_ready()
+        
         t_start_eval = time.perf_counter()
         Y_nn = forward(X_test, params).reshape(X_test.shape)
         Y_nn.block_until_ready()

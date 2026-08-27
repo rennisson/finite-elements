@@ -264,6 +264,8 @@ for arch in architectures:
         all_l2_error_trajectories.append(l2_error_trajectory_run)
 
         # 4. Avaliação e Erro L2
+        _ = forward(xy_points_gt, params).block_until_ready()
+        
         t_start_eval = time.perf_counter()
         u_nn_flat = forward(xy_points_gt, params)
         u_nn = u_nn_flat.reshape(X_mesh_gt.shape)

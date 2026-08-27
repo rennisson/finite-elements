@@ -385,7 +385,7 @@ def compute_lambda(params, xy_grid, phi_samples, xy_x0, xy_x1, xy_y0, xy_y1, eps
     L_phi = sv_pinn_norm_squared(R, phi_samples)
     Rb = boundary_residual(params, xy_x0, xy_x1, xy_y0, xy_y1)
     L_b = jnp.mean(Rb ** 2)
-    return L_phi / (L_b + eps)
+    return 2* (L_phi / (L_b + eps))
 
 
 # ==========================================
@@ -531,6 +531,8 @@ for arch in architectures:
               f"lambda (fixo) = {float(lam):.4e} | Loss: {loss_lbfgs:.8e}")
 
         # 6. Avaliação nos pontos Ground Truth
+        _ = forward(xy_points_gt, params).block_until_ready()
+
         t_start_eval = time.perf_counter()
         u_nn_flat = forward(xy_points_gt, params)
         u_nn = u_nn_flat.reshape(X_mesh_gt.shape)

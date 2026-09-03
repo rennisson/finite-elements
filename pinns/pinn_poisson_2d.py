@@ -168,7 +168,7 @@ for arch in architectures:
     def objective_lbfgs(p_flat, xy_interior, xy_x0, xy_x1, xy_y0, xy_y1):
         return loss_function(unflatten_fn(p_flat), xy_interior, xy_x0, xy_x1, xy_y0, xy_y1)
     
-    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=lbfgs_maxiter, history_size=50, tol=1e-12)
+    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=lbfgs_maxiter, history_size=200, tol=1e-12)
 
     # Captura o erro L2 a cada eval_freq passos de L-BFGS (mesmo padrão do 1D)
     @jax.jit

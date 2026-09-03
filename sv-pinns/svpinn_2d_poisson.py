@@ -399,7 +399,7 @@ architectures = [
     [120, 120, 120, 120, 120, 1]
 ]
 
-n_colloc = 128              # pontos de colocação por eixo = grid da DST-I (Table A.8, caso 2D)
+n_colloc = 200              # pontos de colocação por eixo = grid da DST-I (Table A.8, caso 2D)
 N_test_functions = 25000    # numero de funcoes teste amostradas (Table A.8, caso 2D)
 n_g_boundary = 250          # pontos de contorno por aresta (N_g de pinn_poisson_2d.py)
 num_runs = 10                 # 3 repeticoes, como no protocolo experimental do paper (Sec. 6)
@@ -447,7 +447,7 @@ for arch in architectures:
     # e mantido constante durante todo o treinamento; o L-BFGS roda uma unica vez
     # por lbfgs_maxiter passos (sem recalibracao de lambda).
     lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=lbfgs_maxiter,
-                          history_size=50, tol=1e-12)
+                          history_size=200, tol=1e-12)
 
     # ---------------------------------------------------------
     # Roda o L-BFGS em blocos apenas para registrar a trajetoria (erro L2 a

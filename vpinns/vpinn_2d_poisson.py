@@ -76,9 +76,9 @@ activation_function = jax.nn.tanh
 # Reduzido em relacao ao 1D para manter o custo das tabelas 2D (Q^2 x K^2)
 # e das avaliacoes de Laplaciano/gradiente por autodiff em Q^2 pontos
 # tratavel; ajuste se quiser mais resolucao.
-K_TEST_FUNCTIONS = 20
-Q_QUADRATURE = 40
-N_G_BOUNDARY = 250          # pontos de colocacao por aresta (mesmo N_g de pinn_poisson_2d.py)
+K_TEST_FUNCTIONS = 40
+Q_QUADRATURE = 60
+N_G_BOUNDARY = 250  # pontos de colocacao por aresta (mesmo N_g de pinn_poisson_2d.py)
 NUM_STEPS = 35000
 EVAL_FREQ = 50
 NUM_RUNS = 10
@@ -88,9 +88,9 @@ NEURONS_PER_LAYER = [20, 60]
 # Nao usada para treinar (L-BFGS nao tem taxa de aprendizagem fixa);
 # mantida apenas para preservar a estrutura do JSON de saida ("dados_...").
 LEARNING_RATE = 1e-3
-TAU_VPINN = 10.0
+TAU_VPINN = 25.0
 
-LBFGS_HISTORY_SIZE = 100
+LBFGS_HISTORY_SIZE = 200
 LBFGS_TOL = 1e-12
 
 X_LEFT, X_RIGHT = 0.0, 1.0

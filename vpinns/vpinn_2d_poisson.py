@@ -283,6 +283,20 @@ def vpinn_loss_R2(params, xy_quad_flat, W_flat, Vx2D_flat, Vy2D_flat, F, tau,
     return L_R + tau * L_b
 
 
+def print_boundary_losses(params, xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, g_fn):
+    """Perda MSE de cada condicao de fronteira separadamente (Eq. 7),
+    para comparacao rapida (mesmo formato de svpinn_2d_poisson.py).
+    Reaproveita as mesmas expressoes de residuo de boundary_loss."""
+    r_x0 = jax.vmap(lambda pt: u_x_scalar(pt[0], pt[1], params) - du_dx_exact(pt[0], pt[1]))(xy_x0)
+    r_x1 = jax.vmap(lambda pt: u_x_scalar(pt[0], pt[1], params) - du_dx_exact(pt[0], pt[1]))(xy_x1)
+    r_y0 = jax.vmap(lambda pt: u_scalar(pt[0], pt[1], params) - g_fn(pt[0]))(xy_y0)
+    r_y1 = jax.vmap(lambda pt: u_y_scalar(pt[0], pt[1], params) - du_dy_exact(pt[0], pt[1]))(xy_y1)
+    labels = ["x=0 (Neumann)", "x=1 (Neumann)", "y=0 (Dirichlet)", "y=1 (Neumann)"]
+    print("  Perda residual por condicao de fronteira:")
+    for label, r in zip(labels, [r_x0, r_x1, r_y0, r_y1]):
+        print(f"    {label:<18s}: {float(jnp.mean(r ** 2)):.6e}")
+
+
 def generate_boundary_points(n_g, key):
     """Pontos de contorno amostrados por LHS, mantidos fixos durante toda
     a otimizacao L-BFGS de uma run (mesmo padrao de 2d_poisson.py /
@@ -444,6 +458,8 @@ for L in HIDDEN_LAYER_CONFIGS:
                 l2_errors.append(rel_l2)
                 print(f"Run {run + 1}/{NUM_RUNS}: erro L2 relativo = {rel_l2:.6e} "
                       f"(treino: {t_train:.2f}s)")
+                print_boundary_losses(params, xy_x0, xy_x1, xy_y0, xy_y1,
+                                       du_dx_exact, du_dy_exact, g_fn)
 
                 if run == NUM_RUNS - 1:
                     U_nn_final = np.asarray(U_nn)

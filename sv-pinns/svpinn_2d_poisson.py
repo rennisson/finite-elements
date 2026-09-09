@@ -334,6 +334,19 @@ def boundary_residual(params, xy_x0, xy_x1, xy_y0, xy_y1):
     return jnp.concatenate([r_x0, r_x1, r_y0, r_y1])
 
 
+def print_boundary_losses(params, xy_x0, xy_x1, xy_y0, xy_y1):
+    """Perda MSE de cada condicao de fronteira separadamente (Eq. 7),
+    para comparacao rapida. Reaproveita boundary_residual, fatiando os
+    4 blocos concatenados (cada um com n_g pontos)."""
+    Rb = boundary_residual(params, xy_x0, xy_x1, xy_y0, xy_y1)
+    n = xy_x0.shape[0]
+    labels = ["x=0 (Neumann)", "x=1 (Neumann)", "y=0 (Dirichlet)", "y=1 (Neumann)"]
+    print("  Perda residual por condicao de fronteira:")
+    for i, label in enumerate(labels):
+        seg = Rb[i * n:(i + 1) * n]
+        print(f"    {label:<18s}: {float(jnp.mean(seg ** 2)):.6e}")
+
+
 def generate_boundary_points(n_g, key):
     """Pontos de contorno amostrados por LHS, mantidos fixos durante toda a
     otimização (analogamente às funções teste, Sec. 4.5), diferente do
@@ -385,7 +398,7 @@ def compute_lambda(params, xy_grid, phi_samples, xy_x0, xy_x1, xy_y0, xy_y1, eps
     L_phi = sv_pinn_norm_squared(R, phi_samples)
     Rb = boundary_residual(params, xy_x0, xy_x1, xy_y0, xy_y1)
     L_b = jnp.mean(Rb ** 2)
-    return 2* (L_phi / (L_b + eps))
+    return 2 * (L_phi / (L_b + eps))
 
 
 # ==========================================
@@ -399,7 +412,7 @@ architectures = [
     [120, 120, 120, 120, 120, 1]
 ]
 
-n_colloc = 200              # pontos de colocação por eixo = grid da DST-I (Table A.8, caso 2D)
+n_colloc = 160              # pontos de colocação por eixo = grid da DST-I (Table A.8, caso 2D)
 N_test_functions = 25000    # numero de funcoes teste amostradas (Table A.8, caso 2D)
 n_g_boundary = 250          # pontos de contorno por aresta (N_g de pinn_poisson_2d.py)
 num_runs = 10                 # 3 repeticoes, como no protocolo experimental do paper (Sec. 6)
@@ -529,6 +542,7 @@ for arch in architectures:
         acc_train_lbfgs += t_lbfgs
         print(f"L-BFGS concluído em {t_lbfgs:.2f}s | tau = {float(tau_run):.4e} | "
               f"lambda (fixo) = {float(lam):.4e} | Loss: {loss_lbfgs:.8e}")
+        print_boundary_losses(params, xy_x0, xy_x1, xy_y0, xy_y1)
 
         # 6. Avaliação nos pontos Ground Truth
         _ = forward(xy_points_gt, params).block_until_ready()

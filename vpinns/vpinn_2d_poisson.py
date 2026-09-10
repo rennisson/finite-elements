@@ -259,6 +259,18 @@ def boundary_loss(params, xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, 
     return jnp.mean(r_x0 ** 2) + jnp.mean(r_x1 ** 2) + jnp.mean(r_y0 ** 2) + jnp.mean(r_y1 ** 2)
 
 
+def compute_R1(params, xy_quad_flat, W_flat, V2D_flat):
+    lap_vals = jax.vmap(lambda pt: laplacian_scalar(pt[0], pt[1], params))(xy_quad_flat)
+    return jnp.einsum("q,q,qk->k", W_flat, lap_vals, V2D_flat)
+
+
+def compute_R2(params, xy_quad_flat, W_flat, Vx2D_flat, Vy2D_flat):
+    ux_vals = jax.vmap(lambda pt: u_x_scalar(pt[0], pt[1], params))(xy_quad_flat)
+    uy_vals = jax.vmap(lambda pt: u_y_scalar(pt[0], pt[1], params))(xy_quad_flat)
+    return (-jnp.einsum("q,q,qk->k", W_flat, ux_vals, Vx2D_flat)
+            - jnp.einsum("q,q,qk->k", W_flat, uy_vals, Vy2D_flat))
+            
+
 def vpinn_loss_R1(params, xy_quad_flat, W_flat, V2D_flat, F, tau,
                    xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, g_fn):
     R = compute_R1(params, xy_quad_flat, W_flat, V2D_flat)

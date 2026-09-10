@@ -261,10 +261,7 @@ def boundary_loss(params, xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, 
 
 def vpinn_loss_R1(params, xy_quad_flat, W_flat, V2D_flat, F, tau,
                    xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, g_fn):
-    """L^(1): R_{kl}^(1) = sum_q W_q Delta u(x_q,y_q) v_{kl}(x_q,y_q)
-    (sem IBP)."""
-    lap_vals = jax.vmap(lambda pt: laplacian_scalar(pt[0], pt[1], params))(xy_quad_flat)
-    R = jnp.einsum("q,q,qk->k", W_flat, lap_vals, V2D_flat)
+    R = compute_R1(params, xy_quad_flat, W_flat, V2D_flat)
     L_R = jnp.mean((R - F) ** 2)
     L_b = boundary_loss(params, xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, g_fn)
     return L_R + tau * L_b
@@ -272,18 +269,13 @@ def vpinn_loss_R1(params, xy_quad_flat, W_flat, V2D_flat, F, tau,
 
 def vpinn_loss_R2(params, xy_quad_flat, W_flat, Vx2D_flat, Vy2D_flat, F, tau,
                    xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, g_fn):
-    """L^(2): R_{kl}^(2) = -sum_q W_q (u_x v_{kl,x} + u_y v_{kl,y}) (uma
-    IBP; o termo de fronteira se anula pois v_{kl} = 0 em toda a
-    fronteira de (0,1)^2)."""
-    ux_vals = jax.vmap(lambda pt: u_x_scalar(pt[0], pt[1], params))(xy_quad_flat)
-    uy_vals = jax.vmap(lambda pt: u_y_scalar(pt[0], pt[1], params))(xy_quad_flat)
-    R = -jnp.einsum("q,q,qk->k", W_flat, ux_vals, Vx2D_flat) - jnp.einsum("q,q,qk->k", W_flat, uy_vals, Vy2D_flat)
+    R = compute_R2(params, xy_quad_flat, W_flat, Vx2D_flat, Vy2D_flat)
     L_R = jnp.mean((R - F) ** 2)
     L_b = boundary_loss(params, xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, g_fn)
     return L_R + tau * L_b
 
 
-def print_boundary_losses(params, xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, g_fn):
+def print_boundary_losses(params, xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, g_fn, L_R_value=None):
     """Perda MSE de cada condicao de fronteira separadamente (Eq. 7),
     para comparacao rapida (mesmo formato de svpinn_2d_poisson.py).
     Reaproveita as mesmas expressoes de residuo de boundary_loss."""
@@ -295,6 +287,9 @@ def print_boundary_losses(params, xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy
     print("  Perda residual por condicao de fronteira:")
     for label, r in zip(labels, [r_x0, r_x1, r_y0, r_y1]):
         print(f"    {label:<18s}: {float(jnp.mean(r ** 2)):.6e}")
+    
+    if L_R_value is not None:
+        print(f"    L_R (residuo interior, sem tau)      : {float(L_R_value):.6e}")
 
 
 def generate_boundary_points(n_g, key):
@@ -458,8 +453,16 @@ for L in HIDDEN_LAYER_CONFIGS:
                 l2_errors.append(rel_l2)
                 print(f"Run {run + 1}/{NUM_RUNS}: erro L2 relativo = {rel_l2:.6e} "
                       f"(treino: {t_train:.2f}s)")
+                if method_tag == "R1":
+                    R_final = compute_R1(params, XY_QUAD_FLAT, W_FLAT, V2D_flat)
+                else:
+                    R_final = compute_R2(params, XY_QUAD_FLAT, W_FLAT, Vx2D_flat, Vy2D_flat)
+                L_R_final = jnp.mean((R_final - F_2D) ** 2)
+
+                print(f"Run {run + 1}/{NUM_RUNS}: erro L2 relativo = {rel_l2:.6e} "
+                      f"(treino: {t_train:.2f}s)")
                 print_boundary_losses(params, xy_x0, xy_x1, xy_y0, xy_y1,
-                                       du_dx_exact, du_dy_exact, g_fn)
+                                       du_dx_exact, du_dy_exact, g_fn, L_R_final)
 
                 if run == NUM_RUNS - 1:
                     U_nn_final = np.asarray(U_nn)

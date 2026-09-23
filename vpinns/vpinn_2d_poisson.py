@@ -71,28 +71,21 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 activation_function = jax.nn.tanh
 
-# Por eixo; produto tensorial => K_TEST_FUNCTIONS**2 funcoes teste e
-# Q_QUADRATURE**2 pontos de quadratura no total (contra 60 e 100 no 1D).
-# Reduzido em relacao ao 1D para manter o custo das tabelas 2D (Q^2 x K^2)
-# e das avaliacoes de Laplaciano/gradiente por autodiff em Q^2 pontos
-# tratavel; ajuste se quiser mais resolucao.
-K_TEST_FUNCTIONS = 40
-Q_QUADRATURE = 60
+K_TEST_FUNCTIONS = 12
+Q_QUADRATURE = 35
 N_G_BOUNDARY = 250  # pontos de colocacao por aresta (mesmo N_g de pinn_poisson_2d.py)
 NUM_STEPS = 35000
 EVAL_FREQ = 50
 NUM_RUNS = 10
-HIDDEN_LAYER_CONFIGS = [2, 3, 4, 5]
+HIDDEN_LAYER_CONFIGS = [3]
 
-NEURONS_PER_LAYER = [20, 60]
+NEURONS_PER_LAYER = [60]
 # Nao usada para treinar (L-BFGS nao tem taxa de aprendizagem fixa);
 # mantida apenas para preservar a estrutura do JSON de saida ("dados_...").
 LEARNING_RATE = 1e-3
-TAU_VPINN = 25.0
+TAU_VPINN = 10.0
 
 LBFGS_HISTORY_SIZE = 200
-LBFGS_TOL = 1e-12
-
 X_LEFT, X_RIGHT = 0.0, 1.0
 Y_BOTTOM, Y_TOP = 0.0, 1.0
 

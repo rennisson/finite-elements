@@ -72,9 +72,8 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 activation_function = jax.nn.tanh
 
 K_TEST_FUNCTIONS = 12
-Q_QUADRATURE = 35
+Q_QUADRATURE = 60
 N_G_BOUNDARY = 250  # pontos de colocacao por aresta (mesmo N_g de pinn_poisson_2d.py)
-NUM_STEPS = 35000
 EVAL_FREQ = 50
 NUM_RUNS = 10
 HIDDEN_LAYER_CONFIGS = [3]
@@ -83,9 +82,18 @@ NEURONS_PER_LAYER = [60]
 # Nao usada para treinar (L-BFGS nao tem taxa de aprendizagem fixa);
 # mantida apenas para preservar a estrutura do JSON de saida ("dados_...").
 LEARNING_RATE = 1e-3
-TAU_VPINN = 10.0
+
+TAU_SCHEDULE = [
+    (0.01, 4000),
+    (0.025, 5000),
+    (0.05, 7000),
+    (0.1, 9000),
+]
+NUM_STEPS = sum(steps for _, steps in TAU_SCHEDULE)
 
 LBFGS_HISTORY_SIZE = 200
+LBFGS_TOL = 1e-12
+
 X_LEFT, X_RIGHT = 0.0, 1.0
 Y_BOTTOM, Y_TOP = 0.0, 1.0
 
@@ -264,19 +272,91 @@ def compute_R2(params, xy_quad_flat, W_flat, Vx2D_flat, Vy2D_flat):
             - jnp.einsum("q,q,qk->k", W_flat, uy_vals, Vy2D_flat))
             
 
+def compute_loss_components_R1(
+    params,
+    xy_quad_flat,
+    W_flat,
+    V2D_flat,
+    F,
+    xy_x0,
+    xy_x1,
+    xy_y0,
+    xy_y1,
+    du_dx_exact,
+    du_dy_exact,
+    g_fn,
+):
+    R = compute_R1(
+        params,
+        xy_quad_flat,
+        W_flat,
+        V2D_flat,
+    )
+    L_R = jnp.mean((R - F) ** 2)
+    L_b = boundary_loss(
+        params,
+        xy_x0,
+        xy_x1,
+        xy_y0,
+        xy_y1,
+        du_dx_exact,
+        du_dy_exact,
+        g_fn,
+    )
+    return L_R, L_b
+
+
+def compute_loss_components_R2(
+    params,
+    xy_quad_flat,
+    W_flat,
+    Vx2D_flat,
+    Vy2D_flat,
+    F,
+    xy_x0,
+    xy_x1,
+    xy_y0,
+    xy_y1,
+    du_dx_exact,
+    du_dy_exact,
+    g_fn,
+):
+    R = compute_R2(
+        params,
+        xy_quad_flat,
+        W_flat,
+        Vx2D_flat,
+        Vy2D_flat,
+    )
+    L_R = jnp.mean((R - F) ** 2)
+    L_b = boundary_loss(
+        params,
+        xy_x0,
+        xy_x1,
+        xy_y0,
+        xy_y1,
+        du_dx_exact,
+        du_dy_exact,
+        g_fn,
+    )
+    return L_R, L_b
+
+
 def vpinn_loss_R1(params, xy_quad_flat, W_flat, V2D_flat, F, tau,
                    xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, g_fn):
-    R = compute_R1(params, xy_quad_flat, W_flat, V2D_flat)
-    L_R = jnp.mean((R - F) ** 2)
-    L_b = boundary_loss(params, xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, g_fn)
+    L_R, L_b = compute_loss_components_R1(
+        params, xy_quad_flat, W_flat, V2D_flat, F,
+        xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, g_fn
+    )
     return L_R + tau * L_b
 
 
 def vpinn_loss_R2(params, xy_quad_flat, W_flat, Vx2D_flat, Vy2D_flat, F, tau,
                    xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, g_fn):
-    R = compute_R2(params, xy_quad_flat, W_flat, Vx2D_flat, Vy2D_flat)
-    L_R = jnp.mean((R - F) ** 2)
-    L_b = boundary_loss(params, xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, g_fn)
+    L_R, L_b = compute_loss_components_R2(
+        params, xy_quad_flat, W_flat, Vx2D_flat, Vy2D_flat, F,
+        xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, g_fn
+    )
     return L_R + tau * L_b
 
 
@@ -322,10 +402,10 @@ def generate_boundary_points(n_g, key):
 # ==========================================
 # 6. OTIMIZADOR L-BFGS (jaxopt.LBFGS)
 # ==========================================
-def train_lbfgs(params, loss_fn, num_steps, eval_freq, XY_test, U_test,
+def train_lbfgs(params, loss_fn, tau, num_steps, eval_freq, XY_test, U_test,
                  history_size=LBFGS_HISTORY_SIZE, tol=LBFGS_TOL):
     """
-    Treina `params` minimizando `loss_fn(params)` via L-BFGS
+    Treina `params` minimizando `loss_fn(params, tau)` via L-BFGS
     (jaxopt.LBFGS), registrando a loss e o erro L2 relativo (contra
     XY_test/U_test, pontos e valores do ground truth achatados) a cada
     `eval_freq` passos.
@@ -335,14 +415,13 @@ def train_lbfgs(params, loss_fn, num_steps, eval_freq, XY_test, U_test,
     L-BFGS (sem avaliacao) dentro de um jax.lax.scan de
     num_steps // eval_freq blocos (uma avaliacao por bloco). `loss_fn`
     ja fecha sobre os dados fixos da formulacao variacional e da run
-    (grid de quadratura, tabelas de teste, F, tau, pontos de contorno),
-    por isso o objetivo do L-BFGS depende apenas do vetor de parametros
-    achatado.
+    (grid de quadratura, tabelas de teste, F, pontos de contorno),
+    recebendo os parametros da rede e o valor de tau do estagio.
     """
     p_flat, unflatten_fn = jax.flatten_util.ravel_pytree(params)
 
     def objective(p_flat_):
-        return loss_fn(unflatten_fn(p_flat_))
+        return loss_fn(unflatten_fn(p_flat_), tau)
 
     lbfgs = jaxopt.LBFGS(fun=objective, maxiter=num_steps, history_size=history_size, tol=tol)
     num_blocks = num_steps // eval_freq
@@ -427,23 +506,60 @@ for L in HIDDEN_LAYER_CONFIGS:
                 xy_x0, xy_x1, xy_y0, xy_y1 = generate_boundary_points(N_G_BOUNDARY, boundary_key)
 
                 if method_tag == "R1":
-                    loss_fn_run = lambda p: vpinn_loss_R1(
-                        p, XY_QUAD_FLAT, W_FLAT, V2D_flat, F_2D, TAU_VPINN,
+                    loss_fn_run = lambda p, tau_: vpinn_loss_R1(
+                        p, XY_QUAD_FLAT, W_FLAT, V2D_flat, F_2D, tau_,
                         xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, g_fn
                     )
                 else:
-                    loss_fn_run = lambda p: vpinn_loss_R2(
-                        p, XY_QUAD_FLAT, W_FLAT, Vx2D_flat, Vy2D_flat, F_2D, TAU_VPINN,
+                    loss_fn_run = lambda p, tau_: vpinn_loss_R2(
+                        p, XY_QUAD_FLAT, W_FLAT, Vx2D_flat, Vy2D_flat, F_2D, tau_,
                         xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, g_fn
                     )
 
                 t0 = time.perf_counter()
-                params, loss_traj, err_traj = train_lbfgs(
-                    params, loss_fn_run, NUM_STEPS, EVAL_FREQ, XY_TEST, U_TEST
-                )
-                jax.block_until_ready(params)
+                run_loss_trajs = []
+                run_err_trajs = []
+                stage_history = []
+
+                for stage_idx, (tau_stage, steps_stage) in enumerate(TAU_SCHEDULE):
+                    params, loss_traj_stage, err_traj_stage = train_lbfgs(
+                        params, loss_fn_run, tau_stage, steps_stage, EVAL_FREQ, XY_TEST, U_TEST
+                    )
+                    run_loss_trajs.append(loss_traj_stage)
+                    run_err_trajs.append(err_traj_stage)
+
+                    if method_tag == "R1":
+                        L_R_stg, L_b_stg = compute_loss_components_R1(
+                            params, XY_QUAD_FLAT, W_FLAT, V2D_flat, F_2D,
+                            xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, g_fn
+                        )
+                    else:
+                        L_R_stg, L_b_stg = compute_loss_components_R2(
+                            params, XY_QUAD_FLAT, W_FLAT, Vx2D_flat, Vy2D_flat, F_2D,
+                            xy_x0, xy_x1, xy_y0, xy_y1, du_dx_exact, du_dy_exact, g_fn
+                        )
+
+                    tau_Lb = tau_stage * L_b_stg
+                    L_total = L_R_stg + tau_Lb
+                    print(f"  [Run {run + 1} | Estagio {stage_idx + 1}/{len(TAU_SCHEDULE)} | tau={tau_stage} | passos={steps_stage}] "
+                          f"L_b: {float(L_b_stg):.6e} | L_R: {float(L_R_stg):.6e} | "
+                          f"tau*L_b: {float(tau_Lb):.6e} | L_total: {float(L_total):.6e}")
+
+                    stage_history.append({
+                        "stage": stage_idx + 1,
+                        "tau": float(tau_stage),
+                        "steps": int(steps_stage),
+                        "L_b": float(L_b_stg),
+                        "L_R": float(L_R_stg),
+                        "tau_L_b": float(tau_Lb),
+                        "L_total": float(L_total),
+                    })
+
                 t_train = time.perf_counter() - t0
                 acc_train_time += t_train
+
+                loss_traj = np.concatenate(run_loss_trajs)
+                err_traj = np.concatenate(run_err_trajs)
 
                 loss_trajectories.append(loss_traj)
                 err_trajectories.append(err_traj)
@@ -457,15 +573,13 @@ for L in HIDDEN_LAYER_CONFIGS:
                 rel_l2 = float(jnp.linalg.norm(U_nn - U_TEST) / jnp.linalg.norm(U_TEST))
                 l2_errors.append(rel_l2)
                 print(f"Run {run + 1}/{NUM_RUNS}: erro L2 relativo = {rel_l2:.6e} "
-                      f"(treino: {t_train:.2f}s)")
+                      f"(treino total: {t_train:.2f}s)")
                 if method_tag == "R1":
                     R_final = compute_R1(params, XY_QUAD_FLAT, W_FLAT, V2D_flat)
                 else:
                     R_final = compute_R2(params, XY_QUAD_FLAT, W_FLAT, Vx2D_flat, Vy2D_flat)
                 L_R_final = jnp.mean((R_final - F_2D) ** 2)
 
-                print(f"Run {run + 1}/{NUM_RUNS}: erro L2 relativo = {rel_l2:.6e} "
-                      f"(treino: {t_train:.2f}s)")
                 print_boundary_losses(params, xy_x0, xy_x1, xy_y0, xy_y1,
                                        du_dx_exact, du_dy_exact, g_fn, L_R_final)
 
@@ -500,7 +614,8 @@ for L in HIDDEN_LAYER_CONFIGS:
                 "n_quadrature_points_per_axis": Q_QUADRATURE,
                 "n_quadrature_points": Q_QUADRATURE ** 2,
                 "n_boundary_points": N_G_BOUNDARY,
-                "tau": TAU_VPINN,
+                "tau_schedule": TAU_SCHEDULE,
+                "tau": TAU_SCHEDULE[-1][0],
                 "learning_rate": LEARNING_RATE,
                 "num_iterations": NUM_STEPS,
                 "num_runs_avg": NUM_RUNS,
@@ -509,6 +624,7 @@ for L in HIDDEN_LAYER_CONFIGS:
                 "time_training": avg_train_time,
                 "time_evaluation": avg_eval_time,
                 "num_params": int(params_final_flat.shape[0]),
+                "stage_components_last_run": stage_history,
             }
             with open(nome_arquivo, "w") as fjson:
                 json.dump(results, fjson, indent=4)

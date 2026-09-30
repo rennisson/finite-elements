@@ -334,17 +334,30 @@ def boundary_residual(params, xy_x0, xy_x1, xy_y0, xy_y1):
     return jnp.concatenate([r_x0, r_x1, r_y0, r_y1])
 
 
+def compute_boundary_losses(params, xy_x0, xy_x1, xy_y0, xy_y1):
+    """Retorna os resíduos quadráticos médios (MSE) de cada condição de fronteira da Eq. (7):
+    x=0 (Neumann), x=1 (Neumann), y=0 (Dirichlet), y=1 (Neumann)."""
+    r_x0 = jax.vmap(lambda pt: du_dx(pt[0], pt[1], params))(xy_x0)
+    r_x1 = jax.vmap(lambda pt: du_dx(pt[0], pt[1], params))(xy_x1)
+    r_y0 = jax.vmap(lambda pt: u_net(pt[0], pt[1], params))(xy_y0)
+    r_y1 = jax.vmap(lambda pt: du_dy(pt[0], pt[1], params))(xy_y1)
+    return (
+        jnp.mean(r_x0 ** 2),
+        jnp.mean(r_x1 ** 2),
+        jnp.mean(r_y0 ** 2),
+        jnp.mean(r_y1 ** 2),
+    )
+
+
 def print_boundary_losses(params, xy_x0, xy_x1, xy_y0, xy_y1):
     """Perda MSE de cada condicao de fronteira separadamente (Eq. 7),
-    para comparacao rapida. Reaproveita boundary_residual, fatiando os
-    4 blocos concatenados (cada um com n_g pontos)."""
-    Rb = boundary_residual(params, xy_x0, xy_x1, xy_y0, xy_y1)
-    n = xy_x0.shape[0]
+    para comparacao rapida."""
+    loss_x0, loss_x1, loss_y0, loss_y1 = compute_boundary_losses(params, xy_x0, xy_x1, xy_y0, xy_y1)
     labels = ["x=0 (Neumann)", "x=1 (Neumann)", "y=0 (Dirichlet)", "y=1 (Neumann)"]
+    losses = [loss_x0, loss_x1, loss_y0, loss_y1]
     print("  Perda residual por condicao de fronteira:")
-    for i, label in enumerate(labels):
-        seg = Rb[i * n:(i + 1) * n]
-        print(f"    {label:<18s}: {float(jnp.mean(seg ** 2)):.6e}")
+    for label, val in zip(labels, losses):
+        print(f"    {label:<18s}: {float(val):.6e}")
 
 
 def generate_boundary_points(n_g, key):
@@ -436,6 +449,10 @@ for arch in architectures:
     l2_errors = []
     l2_error_runs = []   # trajetoria (por passo) de erro L2, uma lista por run
     loss_runs = []        # trajetoria (por passo) da perda, uma lista por run
+    bc_x0_runs = []       # trajetoria MSE contorno x=0
+    bc_x1_runs = []       # trajetoria MSE contorno x=1
+    bc_y0_runs = []       # trajetoria MSE contorno y=0
+    bc_y1_runs = []       # trajetoria MSE contorno y=1
 
     U_nn_final = None
     params_final_flat = None
@@ -463,8 +480,8 @@ for arch in architectures:
                           history_size=200, tol=1e-12)
 
     # ---------------------------------------------------------
-    # Roda o L-BFGS em blocos apenas para registrar a trajetoria (erro L2 a
-    # cada 10 passos); lambda permanece fixo em todos os blocos.
+    # Roda o L-BFGS em blocos apenas para registrar a trajetoria (erro L2 e
+    # perdas de contorno a cada 100 passos); lambda permanece fixo em todos os blocos.
     # ---------------------------------------------------------
     @jax.jit
     def lbfgs_segment_with_trajectory(p_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam):
@@ -477,7 +494,7 @@ for arch in architectures:
         def block_fn(carry, _):
             p, s = carry
 
-            # Loop interno: executa 10 iteracoes apenas atualizando os pesos (sem inferencia)
+            # Loop interno: executa eval_freq iteracoes apenas atualizando os pesos (sem inferencia pesada)
             def inner_step(i, val):
                 p_in, s_in = val
                 p_out, s_out = lbfgs.update(p_in, s_in,
@@ -489,18 +506,21 @@ for arch in architectures:
 
             p_next, s_next = jax.lax.fori_loop(0, eval_freq, inner_step, (p, s))
 
-            # Avaliacao: ocorre apenas 1x ao final do bloco de 10 passos
+            # Avaliacao: ocorre 1x ao final de cada bloco de passos
             params_ = unflatten_fn(p_next)
             u_nn = forward(xy_points_gt, params_).reshape(X_mesh_gt.shape)
             l2_err = jnp.linalg.norm(u_nn - U_true_gt) / jnp.linalg.norm(U_true_gt)
 
-            # state.value guarda o ultimo valor da Loss calculado
-            return (p_next, s_next), (s_next.value, l2_err)
+            # Perdas individuais de cada condicao de contorno
+            bc_x0, bc_x1, bc_y0, bc_y1 = compute_boundary_losses(params_, xy_x0, xy_x1, xy_y0, xy_y1)
 
-        (p_final, state_final), (loss_traj, err_traj) = jax.lax.scan(
+            # state.value guarda o ultimo valor da Loss calculado
+            return (p_next, s_next), (s_next.value, l2_err, bc_x0, bc_x1, bc_y0, bc_y1)
+
+        (p_final, state_final), (loss_traj, err_traj, bc_x0_traj, bc_x1_traj, bc_y0_traj, bc_y1_traj) = jax.lax.scan(
             block_fn, (p_flat, state), xs=None, length=num_blocks)
 
-        return p_final, state_final, loss_traj, err_traj
+        return p_final, state_final, loss_traj, err_traj, bc_x0_traj, bc_x1_traj, bc_y0_traj, bc_y1_traj
 
 
     for run in range(num_runs):
@@ -527,10 +547,15 @@ for arch in architectures:
         # 5. Otimização via L-BFGS, de uma unica vez, por lbfgs_maxiter passos (lambda fixo)
         t_start_lbfgs = time.perf_counter()
 
-        params_flat, state, run_loss_traj, run_l2_traj = lbfgs_segment_with_trajectory(
+        (params_flat, state, run_loss_traj, run_l2_traj,
+         run_bc_x0_traj, run_bc_x1_traj, run_bc_y0_traj, run_bc_y1_traj) = lbfgs_segment_with_trajectory(
             params_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam)
         run_loss_traj = np.asarray(run_loss_traj)
         run_l2_traj = np.asarray(run_l2_traj)
+        run_bc_x0_traj = np.asarray(run_bc_x0_traj)
+        run_bc_x1_traj = np.asarray(run_bc_x1_traj)
+        run_bc_y0_traj = np.asarray(run_bc_y0_traj)
+        run_bc_y1_traj = np.asarray(run_bc_y1_traj)
 
         params = unflatten_fn(params_flat)
         loss_lbfgs = objective_lbfgs(params_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam).block_until_ready()
@@ -538,6 +563,10 @@ for arch in architectures:
 
         l2_error_runs.append(run_l2_traj)
         loss_runs.append(run_loss_traj)
+        bc_x0_runs.append(run_bc_x0_traj)
+        bc_x1_runs.append(run_bc_x1_traj)
+        bc_y0_runs.append(run_bc_y0_traj)
+        bc_y1_runs.append(run_bc_y1_traj)
 
         acc_train_lbfgs += t_lbfgs
         print(f"L-BFGS concluído em {t_lbfgs:.2f}s | tau = {float(tau_run):.4e} | "
@@ -610,10 +639,14 @@ for arch in architectures:
         json.dump(points, f, indent=4)
 
     # ---------------------------------------------------------
-    # NOVIDADE: Exportação da curva seguindo o mesmo layout (1D)
+    # Exportação das trajetórias (L2, Loss e Condições de Contorno)
     # ---------------------------------------------------------
     all_loss_trajectories = np.stack(loss_runs, axis=0)         
     all_l2_error_trajectories = np.stack(l2_error_runs, axis=0) 
+    all_bc_x0_trajectories = np.stack(bc_x0_runs, axis=0)
+    all_bc_x1_trajectories = np.stack(bc_x1_runs, axis=0)
+    all_bc_y0_trajectories = np.stack(bc_y0_runs, axis=0)
+    all_bc_y1_trajectories = np.stack(bc_y1_runs, axis=0)
 
     training_curve = {
         'architecture': width,
@@ -628,6 +661,19 @@ for arch in architectures:
         'loss_per_run': all_loss_trajectories.tolist(),
         'l2_relative_error_mean': all_l2_error_trajectories.mean(axis=0).tolist(),
         'l2_relative_error_std': all_l2_error_trajectories.std(axis=0).tolist(),
+        # Condições de contorno (MSE)
+        'bc_loss_x0_per_run': all_bc_x0_trajectories.tolist(),
+        'bc_loss_x0_mean': all_bc_x0_trajectories.mean(axis=0).tolist(),
+        'bc_loss_x0_std': all_bc_x0_trajectories.std(axis=0).tolist(),
+        'bc_loss_x1_per_run': all_bc_x1_trajectories.tolist(),
+        'bc_loss_x1_mean': all_bc_x1_trajectories.mean(axis=0).tolist(),
+        'bc_loss_x1_std': all_bc_x1_trajectories.std(axis=0).tolist(),
+        'bc_loss_y0_per_run': all_bc_y0_trajectories.tolist(),
+        'bc_loss_y0_mean': all_bc_y0_trajectories.mean(axis=0).tolist(),
+        'bc_loss_y0_std': all_bc_y0_trajectories.std(axis=0).tolist(),
+        'bc_loss_y1_per_run': all_bc_y1_trajectories.tolist(),
+        'bc_loss_y1_mean': all_bc_y1_trajectories.mean(axis=0).tolist(),
+        'bc_loss_y1_std': all_bc_y1_trajectories.std(axis=0).tolist(),
     }
 
     # Salvo como 'curva_treino_svpinn_2d_*.json' para ser iterado no script gerador do plot

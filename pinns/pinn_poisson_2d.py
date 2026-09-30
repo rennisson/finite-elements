@@ -46,9 +46,9 @@ def pde_rhs(x, y):
 # ==========================================
 activation_function = jax.nn.tanh
 lr = 1e-3
-epochs_adam = 15000
-lbfgs_maxiter = 20000
-eval_freq = 10
+epochs_adam = 5000
+lbfgs_maxiter = 15000
+eval_freq = 100
 num_runs = 10
 main_key = jax.random.PRNGKey(42)
 

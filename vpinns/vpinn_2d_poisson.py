@@ -72,10 +72,10 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 activation_function = jax.nn.tanh
 
 K_TEST_FUNCTIONS = 12
-Q_QUADRATURE = 35
+Q_QUADRATURE = 60
 N_G_BOUNDARY = 250  # pontos de colocacao por aresta (mesmo N_g de pinn_poisson_2d.py)
 NUM_STEPS = 20000
-EVAL_FREQ = 50
+EVAL_FREQ = 100
 NUM_RUNS = 10
 HIDDEN_LAYER_CONFIGS = [2,3,4,5]
 
@@ -87,6 +87,7 @@ TAU_VPINN = 0.01
 
 LBFGS_HISTORY_SIZE = 200
 LBFGS_TOL=1e-12
+
 X_LEFT, X_RIGHT = 0.0, 1.0
 Y_BOTTOM, Y_TOP = 0.0, 1.0
 

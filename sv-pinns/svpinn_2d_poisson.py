@@ -418,17 +418,18 @@ def compute_lambda(params, xy_grid, phi_samples, xy_x0, xy_x1, xy_y0, xy_y1, eps
 # 7. TREINAMENTO DAS SV-PINNs (SOMENTE L-BFGS, SEM ADAM)
 # ==========================================
 architectures = [
-    [20, 20, 1], [60, 60, 1],
-    [20, 20, 20, 1], [60, 60, 60, 1],
-    [20, 20, 20, 20, 1], [60, 60, 60, 60, 1],
-    [20, 20, 20, 20, 20, 1], [60, 60, 60, 60, 60, 1],
-    [120, 120, 120, 120, 120, 1]
+    # [20, 20, 1], [60, 60, 1],
+    # [20, 20, 20, 1], 
+    [60, 60, 60, 1],
+    # [20, 20, 20, 20, 1], [60, 60, 60, 60, 1],
+    # [20, 20, 20, 20, 20, 1], [60, 60, 60, 60, 60, 1],
+    # [120, 120, 120, 120, 120, 1]
 ]
 
 n_colloc = 128              # pontos de colocação por eixo = grid da DST-I (Table A.8, caso 2D)
-N_test_functions = 25000    # numero de funcoes teste amostradas (Table A.8, caso 2D)
+N_test_functions = 10000    # numero de funcoes teste amostradas (Table A.8, caso 2D)
 n_g_boundary = 250          # pontos de contorno por aresta (N_g de pinn_poisson_2d.py)
-num_runs = 10                 # 3 repeticoes, como no protocolo experimental do paper (Sec. 6)
+num_runs = 3                 # 3 repeticoes, como no protocolo experimental do paper (Sec. 6)
 lbfgs_maxiter = 20000          # SV-PINNs treinadas por L-BFGS por 5,000 passos (Sec. 6)
 
 main_key = jax.random.PRNGKey(42)
@@ -447,12 +448,13 @@ for arch in architectures:
     acc_train_lbfgs = 0.0
     acc_eval_time = 0.0
     l2_errors = []
-    l2_error_runs = []   # trajetoria (por passo) de erro L2, uma lista por run
-    loss_runs = []        # trajetoria (por passo) da perda, uma lista por run
-    bc_x0_runs = []       # trajetoria MSE contorno x=0
-    bc_x1_runs = []       # trajetoria MSE contorno x=1
-    bc_y0_runs = []       # trajetoria MSE contorno y=0
-    bc_y1_runs = []       # trajetoria MSE contorno y=1
+    l2_error_runs = []     # trajetoria (por passo) de erro L2, uma lista por run
+    loss_runs = []          # trajetoria (por passo) da perda, uma lista por run
+    interior_mse_runs = []  # trajetoria MSE residual do interior
+    bc_x0_runs = []         # trajetoria MSE contorno x=0
+    bc_x1_runs = []         # trajetoria MSE contorno x=1
+    bc_y0_runs = []         # trajetoria MSE contorno y=0
+    bc_y1_runs = []         # trajetoria MSE contorno y=1
 
     U_nn_final = None
     params_final_flat = None
@@ -480,8 +482,8 @@ for arch in architectures:
                           history_size=200, tol=1e-12)
 
     # ---------------------------------------------------------
-    # Roda o L-BFGS em blocos apenas para registrar a trajetoria (erro L2 e
-    # perdas de contorno a cada 100 passos); lambda permanece fixo em todos os blocos.
+    # Roda o L-BFGS em blocos apenas para registrar a trajetoria (erro L2,
+    # MSE do interior e perdas de contorno a cada 100 passos); lambda permanece fixo.
     # ---------------------------------------------------------
     @jax.jit
     def lbfgs_segment_with_trajectory(p_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam):
@@ -511,16 +513,20 @@ for arch in architectures:
             u_nn = forward(xy_points_gt, params_).reshape(X_mesh_gt.shape)
             l2_err = jnp.linalg.norm(u_nn - U_true_gt) / jnp.linalg.norm(U_true_gt)
 
-            # Perdas individuais de cada condicao de contorno
+            # MSE residual do interior (EDP) e de cada condicao de contorno
+            r_int = residual_interior(params_, xy_grid)
+            interior_mse = jnp.mean(r_int ** 2)
             bc_x0, bc_x1, bc_y0, bc_y1 = compute_boundary_losses(params_, xy_x0, xy_x1, xy_y0, xy_y1)
 
             # state.value guarda o ultimo valor da Loss calculado
-            return (p_next, s_next), (s_next.value, l2_err, bc_x0, bc_x1, bc_y0, bc_y1)
+            return (p_next, s_next), (s_next.value, l2_err, interior_mse, bc_x0, bc_x1, bc_y0, bc_y1)
 
-        (p_final, state_final), (loss_traj, err_traj, bc_x0_traj, bc_x1_traj, bc_y0_traj, bc_y1_traj) = jax.lax.scan(
-            block_fn, (p_flat, state), xs=None, length=num_blocks)
+        (p_final, state_final), (
+            loss_traj, err_traj, interior_mse_traj, bc_x0_traj, bc_x1_traj, bc_y0_traj, bc_y1_traj
+        ) = jax.lax.scan(block_fn, (p_flat, state), xs=None, length=num_blocks)
 
-        return p_final, state_final, loss_traj, err_traj, bc_x0_traj, bc_x1_traj, bc_y0_traj, bc_y1_traj
+        return (p_final, state_final, loss_traj, err_traj,
+                interior_mse_traj, bc_x0_traj, bc_x1_traj, bc_y0_traj, bc_y1_traj)
 
 
     for run in range(num_runs):
@@ -547,11 +553,12 @@ for arch in architectures:
         # 5. Otimização via L-BFGS, de uma unica vez, por lbfgs_maxiter passos (lambda fixo)
         t_start_lbfgs = time.perf_counter()
 
-        (params_flat, state, run_loss_traj, run_l2_traj,
+        (params_flat, state, run_loss_traj, run_l2_traj, run_interior_mse_traj,
          run_bc_x0_traj, run_bc_x1_traj, run_bc_y0_traj, run_bc_y1_traj) = lbfgs_segment_with_trajectory(
             params_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam)
         run_loss_traj = np.asarray(run_loss_traj)
         run_l2_traj = np.asarray(run_l2_traj)
+        run_interior_mse_traj = np.asarray(run_interior_mse_traj)
         run_bc_x0_traj = np.asarray(run_bc_x0_traj)
         run_bc_x1_traj = np.asarray(run_bc_x1_traj)
         run_bc_y0_traj = np.asarray(run_bc_y0_traj)
@@ -563,6 +570,7 @@ for arch in architectures:
 
         l2_error_runs.append(run_l2_traj)
         loss_runs.append(run_loss_traj)
+        interior_mse_runs.append(run_interior_mse_traj)
         bc_x0_runs.append(run_bc_x0_traj)
         bc_x1_runs.append(run_bc_x1_traj)
         bc_y0_runs.append(run_bc_y0_traj)
@@ -571,6 +579,7 @@ for arch in architectures:
         acc_train_lbfgs += t_lbfgs
         print(f"L-BFGS concluído em {t_lbfgs:.2f}s | tau = {float(tau_run):.4e} | "
               f"lambda (fixo) = {float(lam):.4e} | Loss: {loss_lbfgs:.8e}")
+        print(f"  MSE residual do interior: {float(run_interior_mse_traj[-1]):.6e}")
         print_boundary_losses(params, xy_x0, xy_x1, xy_y0, xy_y1)
 
         # 6. Avaliação nos pontos Ground Truth
@@ -639,10 +648,11 @@ for arch in architectures:
         json.dump(points, f, indent=4)
 
     # ---------------------------------------------------------
-    # Exportação das trajetórias (L2, Loss e Condições de Contorno)
+    # Exportação das trajetórias (L2, Loss, Interior e Condições de Contorno)
     # ---------------------------------------------------------
     all_loss_trajectories = np.stack(loss_runs, axis=0)         
     all_l2_error_trajectories = np.stack(l2_error_runs, axis=0) 
+    all_interior_mse_trajectories = np.stack(interior_mse_runs, axis=0)
     all_bc_x0_trajectories = np.stack(bc_x0_runs, axis=0)
     all_bc_x1_trajectories = np.stack(bc_x1_runs, axis=0)
     all_bc_y0_trajectories = np.stack(bc_y0_runs, axis=0)
@@ -661,6 +671,10 @@ for arch in architectures:
         'loss_per_run': all_loss_trajectories.tolist(),
         'l2_relative_error_mean': all_l2_error_trajectories.mean(axis=0).tolist(),
         'l2_relative_error_std': all_l2_error_trajectories.std(axis=0).tolist(),
+        # Interior (MSE do resíduo da EDP)
+        'interior_loss_per_run': all_interior_mse_trajectories.tolist(),
+        'interior_loss_mean': all_interior_mse_trajectories.mean(axis=0).tolist(),
+        'interior_loss_std': all_interior_mse_trajectories.std(axis=0).tolist(),
         # Condições de contorno (MSE)
         'bc_loss_x0_per_run': all_bc_x0_trajectories.tolist(),
         'bc_loss_x0_mean': all_bc_x0_trajectories.mean(axis=0).tolist(),

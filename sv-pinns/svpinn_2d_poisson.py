@@ -29,6 +29,21 @@ config.update("jax_enable_x64", True)
 config.update("jax_default_matmul_precision", "highest")
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
+architectures = [
+    # [20, 20, 1], [60, 60, 1],
+    # [20, 20, 20, 1], 
+    [60, 60, 60, 1],
+    # [20, 20, 20, 20, 1], [60, 60, 60, 60, 1],
+    # [20, 20, 20, 20, 20, 1], [60, 60, 60, 60, 60, 1],
+    # [120, 120, 120, 120, 120, 1]
+]
+
+n_colloc = 128              # pontos de colocação por eixo = grid da DST-I (Table A.8, caso 2D)
+N_test_functions = 10000    # numero de funcoes teste amostradas (Table A.8, caso 2D)
+n_g_boundary = 250          # pontos de contorno por aresta (N_g de pinn_poisson_2d.py)
+num_runs = 3                 # 3 repeticoes, como no protocolo experimental do paper (Sec. 6)
+lbfgs_maxiter = 20000          # SV-PINNs treinadas por L-BFGS por 5,000 passos (Sec. 6)
+
 activation_function = jax.nn.tanh
 
 
@@ -417,21 +432,6 @@ def compute_lambda(params, xy_grid, phi_samples, xy_x0, xy_x1, xy_y0, xy_y1, eps
 # ==========================================
 # 7. TREINAMENTO DAS SV-PINNs (SOMENTE L-BFGS, SEM ADAM)
 # ==========================================
-architectures = [
-    # [20, 20, 1], [60, 60, 1],
-    # [20, 20, 20, 1], 
-    [60, 60, 60, 1],
-    # [20, 20, 20, 20, 1], [60, 60, 60, 60, 1],
-    # [20, 20, 20, 20, 20, 1], [60, 60, 60, 60, 60, 1],
-    # [120, 120, 120, 120, 120, 1]
-]
-
-n_colloc = 128              # pontos de colocação por eixo = grid da DST-I (Table A.8, caso 2D)
-N_test_functions = 10000    # numero de funcoes teste amostradas (Table A.8, caso 2D)
-n_g_boundary = 250          # pontos de contorno por aresta (N_g de pinn_poisson_2d.py)
-num_runs = 3                 # 3 repeticoes, como no protocolo experimental do paper (Sec. 6)
-lbfgs_maxiter = 20000          # SV-PINNs treinadas por L-BFGS por 5,000 passos (Sec. 6)
-
 main_key = jax.random.PRNGKey(42)
 
 # grid de colocacao x_c^(i,j), fixo, identico ao grid usado para amostrar phi (Sec. 4.3.1)
@@ -466,7 +466,7 @@ for arch in architectures:
     _, unflatten_fn = jax.flatten_util.ravel_pytree(dummy_params)
 
     @jax.jit
-    def objective_lbfgs(p_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam):
+    def raw_objective_lbfgs(p_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam):
         # A avaliacao da métrica L2 (que consome muito tempo) foi removida do objetivo.
         params = unflatten_fn(p_flat)
         R = residual_interior(params, xy_grid)
@@ -474,6 +474,11 @@ for arch in architectures:
         L_phi = sv_pinn_norm_squared(R, phi_samples_run)
         L_b = jnp.mean(Rb ** 2)
         return L_phi + lam * L_b
+
+    @jax.jit
+    def objective_lbfgs(p_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam, loss0):
+        # Normaliza pelo valor inicial L(theta_0) para manter os gradientes e a line search bem condicionados
+        return raw_objective_lbfgs(p_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam) / loss0
 
     # lambda e' fixado no inicio de cada run (lambda = L_Phi(theta_0) / L_b(theta_0))
     # e mantido constante durante todo o treinamento; o L-BFGS roda uma unica vez
@@ -486,9 +491,10 @@ for arch in architectures:
     # MSE do interior e perdas de contorno a cada 100 passos); lambda permanece fixo.
     # ---------------------------------------------------------
     @jax.jit
-    def lbfgs_segment_with_trajectory(p_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam):
+    def lbfgs_segment_with_trajectory(p_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam, loss0):
         state = lbfgs.init_state(p_flat, phi_samples_run=phi_samples_run,
-                                  xy_x0=xy_x0, xy_x1=xy_x1, xy_y0=xy_y0, xy_y1=xy_y1, lam=lam)
+                                  xy_x0=xy_x0, xy_x1=xy_x1, xy_y0=xy_y0, xy_y1=xy_y1,
+                                  lam=lam, loss0=loss0)
 
         eval_freq = 100
         num_blocks = lbfgs_maxiter // eval_freq
@@ -503,7 +509,7 @@ for arch in architectures:
                                             phi_samples_run=phi_samples_run,
                                             xy_x0=xy_x0, xy_x1=xy_x1,
                                             xy_y0=xy_y0, xy_y1=xy_y1,
-                                            lam=lam)
+                                            lam=lam, loss0=loss0)
                 return p_out, s_out
 
             p_next, s_next = jax.lax.fori_loop(0, eval_freq, inner_step, (p, s))
@@ -518,7 +524,7 @@ for arch in architectures:
             interior_mse = jnp.mean(r_int ** 2)
             bc_x0, bc_x1, bc_y0, bc_y1 = compute_boundary_losses(params_, xy_x0, xy_x1, xy_y0, xy_y1)
 
-            # state.value guarda o ultimo valor da Loss calculado
+            # state.value guarda o ultimo valor da Loss (normalizada) calculado
             return (p_next, s_next), (s_next.value, l2_err, interior_mse, bc_x0, bc_x1, bc_y0, bc_y1)
 
         (p_final, state_final), (
@@ -550,12 +556,15 @@ for arch in architectures:
         #    vez a partir dos parametros iniciais e mantido constante durante o treino.
         lam = compute_lambda(params, xy_grid, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1)
 
+        # Valor inicial da perda para normalizar a função objetivo (L(theta_0) -> 1.0)
+        loss0 = raw_objective_lbfgs(params_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam)
+
         # 5. Otimização via L-BFGS, de uma unica vez, por lbfgs_maxiter passos (lambda fixo)
         t_start_lbfgs = time.perf_counter()
 
         (params_flat, state, run_loss_traj, run_l2_traj, run_interior_mse_traj,
          run_bc_x0_traj, run_bc_x1_traj, run_bc_y0_traj, run_bc_y1_traj) = lbfgs_segment_with_trajectory(
-            params_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam)
+            params_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam, loss0)
         run_loss_traj = np.asarray(run_loss_traj)
         run_l2_traj = np.asarray(run_l2_traj)
         run_interior_mse_traj = np.asarray(run_interior_mse_traj)
@@ -565,7 +574,9 @@ for arch in architectures:
         run_bc_y1_traj = np.asarray(run_bc_y1_traj)
 
         params = unflatten_fn(params_flat)
-        loss_lbfgs = objective_lbfgs(params_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam).block_until_ready()
+        loss_lbfgs = objective_lbfgs(
+            params_flat, phi_samples_run, xy_x0, xy_x1, xy_y0, xy_y1, lam, loss0
+        ).block_until_ready()
         t_lbfgs = time.perf_counter() - t_start_lbfgs
 
         l2_error_runs.append(run_l2_traj)
@@ -578,7 +589,7 @@ for arch in architectures:
 
         acc_train_lbfgs += t_lbfgs
         print(f"L-BFGS concluído em {t_lbfgs:.2f}s | tau = {float(tau_run):.4e} | "
-              f"lambda (fixo) = {float(lam):.4e} | Loss: {loss_lbfgs:.8e}")
+              f"lambda (fixo) = {float(lam):.4e} | Loss0 = {float(loss0):.4e} | Loss (norm): {loss_lbfgs:.8e}")
         print(f"  MSE residual do interior: {float(run_interior_mse_traj[-1]):.6e}")
         print_boundary_losses(params, xy_x0, xy_x1, xy_y0, xy_y1)
 

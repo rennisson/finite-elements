@@ -38,9 +38,9 @@ architectures = [
     # [120, 120, 120, 120, 120, 1]
 ]
 
-n_colloc = 128              # pontos de colocação por eixo = grid da DST-I (Table A.8, caso 2D)
-N_test_functions = 10000    # numero de funcoes teste amostradas (Table A.8, caso 2D)
-n_g_boundary = 250          # pontos de contorno por aresta (N_g de pinn_poisson_2d.py)
+n_colloc = 200              # pontos de colocação por eixo = grid da DST-I (Table A.8, caso 2D)
+N_test_functions = 12000    # numero de funcoes teste amostradas (Table A.8, caso 2D)
+n_g_boundary = 100          # pontos de contorno por aresta (N_g de pinn_poisson_2d.py)
 num_runs = 3                 # 3 repeticoes, como no protocolo experimental do paper (Sec. 6)
 lbfgs_maxiter = 20000          # SV-PINNs treinadas por L-BFGS por 5,000 passos (Sec. 6)
 
@@ -404,12 +404,13 @@ def generate_boundary_points(n_g, key):
 #    e' linear em tau (Eq. 3.2/4.6), entao basta reescalar phi_samples_tau1)
 # ==========================================
 def calibrate_tau(params0, xy_grid, phi_samples_tau1, xy_x0, xy_x1, xy_y0, xy_y1):
-    R0 = residual_interior(params0, xy_grid)
-    L1_phi0 = sv_pinn_norm_squared(R0, phi_samples_tau1)
-    Rb0 = boundary_residual(params0, xy_x0, xy_x1, xy_y0, xy_y1)
-    Lb0 = jnp.mean(Rb0 ** 2)
-    tau2 = Lb0 / L1_phi0
-    return jnp.sqrt(tau2)
+    # R0 = residual_interior(params0, xy_grid)
+    # L1_phi0 = sv_pinn_norm_squared(R0, phi_samples_tau1)
+    # Rb0 = boundary_residual(params0, xy_x0, xy_x1, xy_y0, xy_y1)
+    # Lb0 = jnp.mean(Rb0 ** 2)
+    # tau2 = Lb0 / L1_phi0
+    # return jnp.sqrt(tau2)
+    return 1
 
 
 # ==========================================
@@ -422,12 +423,12 @@ def compute_lambda(params, xy_grid, phi_samples, xy_x0, xy_x1, xy_y0, xy_y1, eps
     """eps evita divisao por L_b quase-zero (observado a levar lambda a
     explodir e o treinamento a divergir quando o contorno ja' esta' bem
     ajustado mas o interior ainda nao)."""
-    R = residual_interior(params, xy_grid)
-    L_phi = sv_pinn_norm_squared(R, phi_samples)
-    Rb = boundary_residual(params, xy_x0, xy_x1, xy_y0, xy_y1)
-    L_b = jnp.mean(Rb ** 2)
-    return 2 * (L_phi / (L_b + eps))
-
+    #R = residual_interior(params, xy_grid)
+    #L_phi = sv_pinn_norm_squared(R, phi_samples)
+    #Rb = boundary_residual(params, xy_x0, xy_x1, xy_y0, xy_y1)
+    #L_b = jnp.mean(Rb ** 2)
+    #return 10 * (L_phi / (L_b + eps))
+    return 10
 
 # ==========================================
 # 7. TREINAMENTO DAS SV-PINNs (SOMENTE L-BFGS, SEM ADAM)

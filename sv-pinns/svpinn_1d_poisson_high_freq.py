@@ -226,13 +226,38 @@ def sv_pinn_norm_squared(residual, phi_samples):
 
 
 # ==========================================
-# 5. ARQUITETURA DA REDE E RESÍDUO DA EDP
-#    (mesma arquitetura/derivadas de pinn_poisson_1d.py; aqui devolvemos o
-#    RESÍDUO BRUTO R(x) = u_xx(x) - rhs(x), pois a perda SV-PINN (Eq. 4.4)
-#    precisa do resíduo ponderado pelas funções de teste, não do seu MSE)
+# 5. DAFF (DOMAIN-AWARE FOURIER FEATURES), ARQUITETURA DA REDE E RESÍDUO DA EDP
+#    Codificação DAFF (Sec. 4.1.1, Eq. 4.2, d=1):
+#        phi_k(x) = sqrt(2) * sin(k * pi * x),  k = 1, ..., n_daff
+#    Aqui devolvemos o RESÍDUO BRUTO R(x) = u_xx(x) - rhs(x), pois a perda
+#    SV-PINN (Eq. 4.4) precisa do resíduo ponderado pelas funções de teste,
+#    não do seu MSE.
 # ==========================================
+n_daff = 64  # número de funções de base DAFF (Table A.8, caso 1D)
+
+
+def daff_encoding(x, n_daff=n_daff):
+    """
+    Mapeia a coordenada x in (0,1) para o vetor de características DAFF
+    pelas autofunções do Laplaciano de Dirichlet em (0,1) (Eq. 4.2, d=1):
+        phi_k(x) = sqrt(2) * sin(k * pi * x),  k = 1, ..., n_daff.
+
+    Parametros
+    ----------
+    x: tensor de entrada, shape (batch, 1)
+    n_daff: número de autofunções (frequências) utilizadas na codificação
+
+    Retorna
+    ----------
+    phi_I(x): tensor codificado, shape (batch, n_daff)
+    """
+    k = jnp.arange(1, n_daff + 1, dtype=x.dtype)
+    return jnp.sqrt(2.0) * jnp.sin(jnp.pi * k * x)
+
+
 @jax.jit
 def forward(x, params):
+    x = daff_encoding(x, n_daff=n_daff)
     *hidden, output = params
     for layer in hidden:
         x = activation_function(x @ layer['W'] + layer['B'])
@@ -300,8 +325,8 @@ def compute_lambda(params, x_grid, phi_samples, eps=1e-10):
 # 7. TREINAMENTO DAS SV-PINNs (SOMENTE L-BFGS, SEM ADAM)
 # ==========================================
 architectures = [
-    [1, 1], [2, 1],
-    [5, 1], [10, 1], [20, 1], [40, 1],
+    #[1, 1], [2, 1],
+    #[5, 1], [10, 1], [20, 1], [40, 1],
     [5, 5, 1], [10, 10, 1], [20, 20, 1], [40, 40, 1],
     [5, 5, 5, 1], [10, 10, 10, 1], [20, 20, 20, 1], [40, 40, 40, 1]
 ]
@@ -319,10 +344,11 @@ x_grid = grid_points(n_colloc, d=1)[:, 0]
 
 for arch in architectures:
     width = [1] + arch
+    layer_dims = [n_daff] + arch  # primeira camada recebe as `n_daff` características DAFF
     arch_str = "_".join(map(str, width))
 
     print("\n" + "=" * 20)
-    print(f"INICIANDO: ARQUITETURA {width} | a = {a} | {num_runs} EXECUÇÕES (SV-PINN, L-BFGS)")
+    print(f"INICIANDO: ARQUITETURA {width} (DAFF={n_daff}) | a = {a} | {num_runs} EXECUÇÕES (SV-PINN, L-BFGS)")
     print("=" * 20)
 
     acc_train_lbfgs = 0.0
@@ -339,9 +365,9 @@ for arch in architectures:
 
     # Inicializador auxiliar apenas para obter a função unflatten (estrutura fixa por arquitetura)
     initializer = jax.nn.initializers.glorot_normal()
-    dummy_key = jax.random.split(main_key, len(width) - 1)
+    dummy_key = jax.random.split(main_key, len(layer_dims) - 1)
     dummy_params = []
-    for k, lin, lout in zip(dummy_key, width[:-1], width[1:]):
+    for k, lin, lout in zip(dummy_key, layer_dims[:-1], layer_dims[1:]):
         dummy_params.append({'W': jnp.zeros((lin, lout)), 'B': jnp.zeros((1, lout))})
 
     _, unflatten_fn = jax.flatten_util.ravel_pytree(dummy_params)
@@ -404,9 +430,9 @@ for arch in architectures:
 
         # 1. Inicializar parâmetros com uma semente diferente por run
         run_key = jax.random.fold_in(main_key, run)
-        layer_keys = jax.random.split(run_key, len(width) - 1)
+        layer_keys = jax.random.split(run_key, len(layer_dims) - 1)
         params = []
-        for k, lin, lout in zip(layer_keys, width[:-1], width[1:]):
+        for k, lin, lout in zip(layer_keys, layer_dims[:-1], layer_dims[1:]):
             W = initializer(k, (lin, lout), jnp.float64)
             B = initializer(k, (1, lout), jnp.float64)
             params.append({'W': W, 'B': B})
@@ -485,6 +511,8 @@ for arch in architectures:
         'architecture': width,
         'num_hidden_layers': len(width) - 1,
         'method': 'SV-PINN (L-BFGS)',
+        'features': 'DAFF',
+        'n_daff': n_daff,
         'a': a,
         'n_colloc': n_colloc,
         'n_test_functions': N_test_functions,
@@ -524,6 +552,8 @@ for arch in architectures:
     training_curve = {
         'architecture': width,
         'method': 'SV-PINN (L-BFGS)',
+        'features': 'DAFF',
+        'n_daff': n_daff,
         'a': a,
         'n_colloc': n_colloc,
         'n_test_functions': N_test_functions,

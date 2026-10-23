@@ -58,12 +58,12 @@ a = 1
 
 K_TEST_FUNCTIONS = 60
 Q_QUADRATURE = 100
-NUM_STEPS = 50000
+NUM_STEPS = 5000
 EVAL_FREQ = 50
-NUM_RUNS = 10
-HIDDEN_LAYER_CONFIGS = [1, 2, 3]
+NUM_RUNS = 3
+HIDDEN_LAYER_CONFIGS = [3]
 
-NEURONS_PER_LAYER = [5, 10, 20, 40]
+NEURONS_PER_LAYER = [512]
 # Nao usada para treinar (L-BFGS nao tem taxa de aprendizagem fixa);
 # mantida apenas para preservar a estrutura do JSON de saida ("dados_...").
 LEARNING_RATE = 1e-3
@@ -207,15 +207,38 @@ def compute_F(x_q, w_q_phys, V, f_fn):
     return jnp.einsum("q,q,qk->k", w_q_phys, f_q, V)
 
 
+def compute_boundary_losses(params, g=0.0, h=0.0):
+    """Retorna os resíduos quadráticos (MSE) de cada condição de fronteira:
+    x=0 (Dirichlet: u(0)=0) e x=1 (Dirichlet: u(1)=0)."""
+    u_left = u_scalar(jnp.asarray(X_LEFT), params)
+    u_right = u_scalar(jnp.asarray(X_RIGHT), params)
+    return (u_left - g) ** 2, (u_right - h) ** 2
+
+
+def print_boundary_losses(params, g=0.0, h=0.0):
+    """Perda MSE de cada condição de fronteira separadamente, para comparação rápida."""
+    loss_x0, loss_x1 = compute_boundary_losses(params, g=g, h=h)
+    labels = ["x=0 (Dirichlet)", "x=1 (Dirichlet)"]
+    losses = [loss_x0, loss_x1]
+    print("  Perda residual por condicao de fronteira:")
+    for label, val in zip(labels, losses):
+        print(f"    {label:<18s}: {float(val):.6e}")
+
+
+def compute_interior_mse(params, x_q, f_q):
+    """MSE residual da EDP no interior: media de |u_xx(x_q) - f(x_q)|^2."""
+    uxx_q = jax.vmap(u_xx_scalar, in_axes=(0, None))(x_q, params)
+    return jnp.mean((uxx_q - f_q) ** 2)
+
+
 def vpinn_loss_R1(params, x_q, w_q_phys, V, F, tau, g, h):
     """L^(1): R_k^(1) = sum_q W_q u_xx(x_q) v_k(x_q) (sem IBP). Sinal
     positivo pois a EDO e u''=f (nao -u''=f, como no Example 5.1)."""
     uxx_q = jax.vmap(u_xx_scalar, in_axes=(0, None))(x_q, params)
     R = jnp.einsum("q,q,qk->k", w_q_phys, uxx_q, V)
     L_R = jnp.mean((R - F) ** 2)
-    u_left = u_scalar(jnp.asarray(X_LEFT), params)
-    u_right = u_scalar(jnp.asarray(X_RIGHT), params)
-    L_b = 0.5 * ((u_left - g) ** 2 + (u_right - h) ** 2)
+    bc_x0, bc_x1 = compute_boundary_losses(params, g=g, h=h)
+    L_b = 0.5 * (bc_x0 + bc_x1)
     return L_R + tau * L_b
 
 
@@ -225,9 +248,8 @@ def vpinn_loss_R2(params, x_q, w_q_phys, Vx_phys, F, tau, g, h):
     ux_q = jax.vmap(u_x_scalar, in_axes=(0, None))(x_q, params)
     R = -jnp.einsum("q,q,qk->k", w_q_phys, ux_q, Vx_phys)
     L_R = jnp.mean((R - F) ** 2)
-    u_left = u_scalar(jnp.asarray(X_LEFT), params)
-    u_right = u_scalar(jnp.asarray(X_RIGHT), params)
-    L_b = 0.5 * ((u_left - g) ** 2 + (u_right - h) ** 2)
+    bc_x0, bc_x1 = compute_boundary_losses(params, g=g, h=h)
+    L_b = 0.5 * (bc_x0 + bc_x1)
     return L_R + tau * L_b
 
 
@@ -235,11 +257,13 @@ def vpinn_loss_R2(params, x_q, w_q_phys, Vx_phys, F, tau, g, h):
 # 6. OTIMIZADOR L-BFGS (jaxopt.LBFGS)
 # ==========================================
 def train_lbfgs(params, loss_fn, num_steps, eval_freq, X_test, Y_test,
+                x_q, f_q, g=0.0, h=0.0,
                 history_size=LBFGS_HISTORY_SIZE, tol=LBFGS_TOL):
     """
     Treina `params` minimizando `loss_fn(params)` via L-BFGS
-    (jaxopt.LBFGS), registrando a loss e o erro L2 relativo (contra
-    X_test/Y_test) a cada `eval_freq` passos.
+    (jaxopt.LBFGS), registrando a loss, o erro L2 relativo (contra
+    X_test/Y_test), o MSE residual no interior e o MSE das condições de
+    contorno a cada `eval_freq` passos.
     """
     p_flat, unflatten_fn = jax.flatten_util.ravel_pytree(params)
 
@@ -259,14 +283,27 @@ def train_lbfgs(params, loss_fn, num_steps, eval_freq, X_test, Y_test,
 
         p_next, state_next = jax.lax.fori_loop(0, eval_freq, inner_step, (p, state))
 
-        Y_nn = forward(X_test, unflatten_fn(p_next))
+        params_ = unflatten_fn(p_next)
+        Y_nn = forward(X_test, params_)
         l2_err = jnp.linalg.norm(Y_nn - Y_test) / jnp.linalg.norm(Y_test)
-        return (p_next, state_next), (state_next.value, l2_err)
+
+        # MSE residual do interior (EDP) e de cada condicao de contorno
+        interior_mse = compute_interior_mse(params_, x_q, f_q)
+        bc_x0, bc_x1 = compute_boundary_losses(params_, g=g, h=h)
+
+        return (p_next, state_next), (state_next.value, l2_err, interior_mse, bc_x0, bc_x1)
 
     init_state = lbfgs.init_state(p_flat)
     run_fn = jax.jit(lambda p, s: jax.lax.scan(block_fn, (p, s), xs=None, length=num_blocks))
-    (p_final, _), (loss_traj, err_traj) = run_fn(p_flat, init_state)
-    return unflatten_fn(p_final), np.asarray(loss_traj), np.asarray(err_traj)
+    (p_final, _), (loss_traj, err_traj, interior_mse_traj, bc_x0_traj, bc_x1_traj) = run_fn(p_flat, init_state)
+    return (
+        unflatten_fn(p_final),
+        np.asarray(loss_traj),
+        np.asarray(err_traj),
+        np.asarray(interior_mse_traj),
+        np.asarray(bc_x0_traj),
+        np.asarray(bc_x1_traj),
+    )
 
 
 # ==========================================
@@ -310,6 +347,7 @@ h = 0.0
 xi_q, x_q, w_q_phys = gauss_legendre_quadrature_unit_interval(Q_QUADRATURE)
 V, Vx_phys = make_test_function_tables(xi_q, K_TEST_FUNCTIONS)
 F = compute_F(x_q, w_q_phys, V, f_fn)
+f_q = jax.vmap(f_fn)(x_q)
 
 for L in HIDDEN_LAYER_CONFIGS:
     for NEURONS in NEURONS_PER_LAYER:
@@ -326,6 +364,7 @@ for L in HIDDEN_LAYER_CONFIGS:
             print("=" * 20)
 
             loss_trajectories, err_trajectories, l2_errors = [], [], []
+            interior_mse_runs, bc_x0_runs, bc_x1_runs = [], [], []
             acc_train_time, acc_eval_time = 0.0, 0.0
             Y_nn_final, params_final_flat = None, None
 
@@ -334,8 +373,12 @@ for L in HIDDEN_LAYER_CONFIGS:
                 params = init_mlp_params(run_key, width)
 
                 t0 = time.perf_counter()
-                params, loss_traj, err_traj = train_lbfgs(
-                    params, loss_builder, NUM_STEPS, EVAL_FREQ, X_TEST, Y_TEST
+                (
+                    params, loss_traj, err_traj,
+                    interior_mse_traj, bc_x0_traj, bc_x1_traj
+                ) = train_lbfgs(
+                    params, loss_builder, NUM_STEPS, EVAL_FREQ, X_TEST, Y_TEST,
+                    x_q=x_q, f_q=f_q, g=g, h=h
                 )
                 jax.block_until_ready(params)
                 t_train = time.perf_counter() - t0
@@ -343,6 +386,9 @@ for L in HIDDEN_LAYER_CONFIGS:
 
                 loss_trajectories.append(loss_traj)
                 err_trajectories.append(err_traj)
+                interior_mse_runs.append(interior_mse_traj)
+                bc_x0_runs.append(bc_x0_traj)
+                bc_x1_runs.append(bc_x1_traj)
 
                 t0 = time.perf_counter()
                 Y_nn = forward(X_TEST, params)
@@ -353,6 +399,8 @@ for L in HIDDEN_LAYER_CONFIGS:
                 l2_errors.append(rel_l2)
                 print(f"Run {run + 1}/{NUM_RUNS}: erro L2 relativo = {rel_l2:.6e} "
                       f"(treino: {t_train:.2f}s)")
+                print(f"  MSE residual do interior: {float(interior_mse_traj[-1]):.6e}")
+                print_boundary_losses(params, g=g, h=h)
 
                 if run == NUM_RUNS - 1:
                     Y_nn_final = np.asarray(Y_nn)
@@ -410,6 +458,10 @@ for L in HIDDEN_LAYER_CONFIGS:
             nome_arquivo = output_dir / f"curva_treino_vpinn_{tag}.json"
             loss_trajectories = np.stack(loss_trajectories, axis=0)
             err_trajectories = np.stack(err_trajectories, axis=0)
+            all_interior_mse_trajectories = np.stack(interior_mse_runs, axis=0)
+            all_bc_x0_trajectories = np.stack(bc_x0_runs, axis=0)
+            all_bc_x1_trajectories = np.stack(bc_x1_runs, axis=0)
+
             training_curve = {
                 "architecture": width,
                 "method": f"VPINN {method_tag[-2:]} - Legendre (L-BFGS)",
@@ -422,6 +474,17 @@ for L in HIDDEN_LAYER_CONFIGS:
                 "loss_per_run": loss_trajectories.tolist(),
                 "l2_relative_error_mean": err_trajectories.mean(axis=0).tolist(),
                 "l2_relative_error_std": err_trajectories.std(axis=0).tolist(),
+                # Interior (MSE do resíduo da EDP)
+                "interior_loss_per_run": all_interior_mse_trajectories.tolist(),
+                "interior_loss_mean": all_interior_mse_trajectories.mean(axis=0).tolist(),
+                "interior_loss_std": all_interior_mse_trajectories.std(axis=0).tolist(),
+                # Condições de contorno (MSE em x=0 e x=1)
+                "bc_loss_x0_per_run": all_bc_x0_trajectories.tolist(),
+                "bc_loss_x0_mean": all_bc_x0_trajectories.mean(axis=0).tolist(),
+                "bc_loss_x0_std": all_bc_x0_trajectories.std(axis=0).tolist(),
+                "bc_loss_x1_per_run": all_bc_x1_trajectories.tolist(),
+                "bc_loss_x1_mean": all_bc_x1_trajectories.mean(axis=0).tolist(),
+                "bc_loss_x1_std": all_bc_x1_trajectories.std(axis=0).tolist(),
             }
             with open(nome_arquivo, "w") as fjson:
                 json.dump(training_curve, fjson, indent=4)

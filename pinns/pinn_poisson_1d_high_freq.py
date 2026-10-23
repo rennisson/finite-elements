@@ -80,12 +80,12 @@ sampler = qmc.LatinHypercube(d=1, seed=136)
 sample = sampler.random(n=n)
 X = jnp.array(sample, dtype=jnp.float32)
 
-learning_rate = 1e-4
+learning_rate = 1e-3
 b1 = 0.9
 b2 = 0.999
 eps = 1e-08
 eps_root = 0.0
-epochs_adam = 15000
+epochs_adam = 5000
 eval_freq = 10
 
 # Inicializa o otimizador Adam
@@ -153,13 +153,10 @@ def update(opt_state, params):
 # 4. LOOP PRINCIPAL DE TREINAMENTO E MEDIÇÃO
 # ==========================================
 architectures = [
-    [1, 1], [2, 1],
-    [5, 1], [10, 1], [20, 1], [40, 1],
-    [5, 5, 1], [10, 10, 1], [20, 20, 1], [40, 40, 1],
-    [5, 5, 5, 1], [10, 10, 10, 1], [20, 20, 20, 1], [40, 40, 40, 1]
+    [512, 512, 512, 1]
 ]
 
-num_runs = 10
+num_runs = 5
 main_key = jax.random.PRNGKey(42)
 
 for arch in architectures:
@@ -197,7 +194,7 @@ for arch in architectures:
     def objective_lbfgs(p_flat, x_colloc):
         return loss_function(unflatten_fn(p_flat), x_colloc)
 
-    lbfgs_maxiter = 20000
+    lbfgs_maxiter = 5000
     lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=lbfgs_maxiter, history_size=200, tol=1e-12)
 
     # Captura o erro L2 a cada 10 passos.

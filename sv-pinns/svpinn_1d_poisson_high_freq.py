@@ -25,6 +25,7 @@ import jaxopt
 import json
 import numpy as np
 import os
+import sys
 import time
 
 from jax import random, config
@@ -58,13 +59,32 @@ def rhs(x, a=a):
 # ==========================================
 x_lower = 0.0
 x_upper = 1.0
-n_test_points = 1000
 
-# Geração do Ground Truth com malha de 1000 pontos para o valor parametrizado de `a`
-X_test = jnp.linspace(x_lower, x_upper, n_test_points, dtype=jnp.float64).reshape(-1, 1)
-Y_test = u(X_test, a=a).reshape(-1, 1)
+# Carrega o Ground Truth gerado por fem/ground_truth_poisson_1d_high_freq.py
+gt_filename = f"gt_poisson_1d_high_freq_a{a}.json"
+gt_candidates = [
+    Path(gt_filename),
+    Path(__file__).resolve().parent / gt_filename
+]
+gt_path = next((p for p in gt_candidates if p.exists()), None)
 
-print(f"Ground truth gerado (a = {a}) com {X_test.shape[0]} pontos.")
+if gt_path is None:
+    fem_dir = str(Path(__file__).resolve().parent.parent / "fem")
+    if fem_dir not in sys.path:
+        sys.path.insert(0, fem_dir)
+    from ground_truth_poisson_1d_high_freq import generate_analytical_solution
+
+    gt_path = Path(gt_filename)
+    generate_analytical_solution(a=a, filename=str(gt_path))
+
+with open(gt_path, "r", encoding="utf-8") as f_in:
+    gt_data = json.load(f_in)
+
+# Assegurar que os arrays estão no formato de coluna, como esperado pela SV-PINN
+X_test = jnp.array(gt_data["X"]).reshape(-1, 1)
+Y_test = jnp.array(gt_data["U_true"]).reshape(-1, 1)
+
+print(f"Ground truth '{gt_path}' carregado (a = {a}) com {X_test.shape[0]} pontos.")
 
 
 # ==========================================
@@ -325,8 +345,8 @@ def compute_lambda(params, x_grid, phi_samples, eps=1e-10):
 # 7. TREINAMENTO DAS SV-PINNs (SOMENTE L-BFGS, SEM ADAM)
 # ==========================================
 architectures = [
-    #[1, 1], [2, 1],
-    #[5, 1], [10, 1], [20, 1], [40, 1],
+    [1, 1], [2, 1],
+    [5, 1], [10, 1], [20, 1], [40, 1],
     [5, 5, 1], [10, 10, 1], [20, 20, 1], [40, 40, 1],
     [5, 5, 5, 1], [10, 10, 10, 1], [20, 20, 20, 1], [40, 40, 40, 1]
 ]

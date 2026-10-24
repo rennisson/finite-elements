@@ -58,18 +58,18 @@ a = 1
 
 K_TEST_FUNCTIONS = 60
 Q_QUADRATURE = 100
-NUM_STEPS = 50000
-EVAL_FREQ = 50
-NUM_RUNS = 10
-HIDDEN_LAYER_CONFIGS = [1, 2, 3]
+NUM_STEPS = 5000
+EVAL_FREQ = 20
+NUM_RUNS = 5
+HIDDEN_LAYER_CONFIGS = [3]
 
-NEURONS_PER_LAYER = [5, 10, 20, 40]
+NEURONS_PER_LAYER = [512]
 # Nao usada para treinar (L-BFGS nao tem taxa de aprendizagem fixa);
 # mantida apenas para preservar a estrutura do JSON de saida ("dados_...").
 LEARNING_RATE = 1e-3
 TAU_VPINN = 10.0
 
-LBFGS_HISTORY_SIZE = 100
+LBFGS_HISTORY_SIZE = 200
 LBFGS_TOL = 1e-12
 
 X_LEFT, X_RIGHT = 0.0, 1.0

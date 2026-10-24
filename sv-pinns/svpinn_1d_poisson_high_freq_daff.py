@@ -40,6 +40,17 @@ activation_function = jax.nn.tanh
 # Parâmetro de frequência da EDP (Eq. 6.3)
 a = 1
 
+architectures = [
+    [512, 512, 512, 1]
+]
+
+n_colloc = 1024            # pontos de colocação = grid da DST-I (Table A.8, caso 1D)
+N_test_functions = 25000   # numero de funcoes teste amostradas (Table A.8, caso 1D)
+num_runs = 5              # repeticoes do protocolo experimental
+lbfgs_maxiter = 5000       # SV-PINNs treinadas por L-BFGS por 5,000 passos (Sec. 6)
+tau = 0.1                  # escala fixa de Phi; o equilibrio dos termos da perda e feito via lambda
+eval_freq = 20
+
 
 def u(x, a=a):
     """Solucao exata da EDP (Eq. 6.3)"""
@@ -344,18 +355,6 @@ def compute_lambda(params, x_grid, phi_samples, eps=1e-10):
 # ==========================================
 # 7. TREINAMENTO DAS SV-PINNs (SOMENTE L-BFGS, SEM ADAM)
 # ==========================================
-architectures = [
-    [1, 1], [2, 1],
-    [5, 1], [10, 1], [20, 1], [40, 1],
-    [5, 5, 1], [10, 10, 1], [20, 20, 1], [40, 40, 1],
-    [5, 5, 5, 1], [10, 10, 10, 1], [20, 20, 20, 1], [40, 40, 40, 1]
-]
-
-n_colloc = 1024            # pontos de colocação = grid da DST-I (Table A.8, caso 1D)
-N_test_functions = 25000   # numero de funcoes teste amostradas (Table A.8, caso 1D)
-num_runs = 10              # repeticoes do protocolo experimental
-lbfgs_maxiter = 5000       # SV-PINNs treinadas por L-BFGS por 5,000 passos (Sec. 6)
-tau = 0.1                  # escala fixa de Phi; o equilibrio dos termos da perda e feito via lambda
 
 main_key = jax.random.PRNGKey(42)
 
@@ -412,7 +411,6 @@ for arch in architectures:
     def lbfgs_segment_with_trajectory(p_flat, phi_samples_run, lam):
         init_state = lbfgs.init_state(p_flat, phi_samples_run=phi_samples_run, lam=lam)
 
-        eval_freq = 10
         # Reduz o tamanho do scan para iterar sobre blocos de passos
         num_blocks = lbfgs_maxiter // eval_freq
 
@@ -524,7 +522,7 @@ for arch in architectures:
     print(f"Tempo Médio Avaliação: {avg_eval_time:.5f}s")
     print("-" * 20)
 
-    output_dir = Path(f"svpinn_poisson_1d_high_freq_a{a}")
+    output_dir = Path(f"svpinn_daff_poisson_1d_high_freq_a{a}")
     output_dir.mkdir(exist_ok=True)
 
     results = {
@@ -579,7 +577,7 @@ for arch in architectures:
         'n_test_functions': N_test_functions,
         'lbfgs_maxiter': lbfgs_maxiter,
         'num_runs': num_runs,
-        'steps': list(range(10, lbfgs_maxiter + 1, 10)),
+        'steps': list(range(eval_freq, lbfgs_maxiter + 1, eval_freq)),
         'l2_relative_error_per_run': all_l2_error_trajectories.tolist(),
         'loss_per_run': all_loss_trajectories.tolist(),
         'l2_relative_error_mean': all_l2_error_trajectories.mean(axis=0).tolist(),

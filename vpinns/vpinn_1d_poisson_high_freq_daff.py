@@ -61,9 +61,9 @@ Q_QUADRATURE = 100
 NUM_STEPS = 5000
 EVAL_FREQ = 20
 NUM_RUNS = 5
-HIDDEN_LAYER_CONFIGS = [3]
+HIDDEN_LAYER_CONFIGS = [2, 3]
 
-NEURONS_PER_LAYER = [512]
+NEURONS_PER_LAYER = [264, 512]
 # Nao usada para treinar (L-BFGS nao tem taxa de aprendizagem fixa);
 # mantida apenas para preservar a estrutura do JSON de saida ("dados_...").
 LEARNING_RATE = 1e-3

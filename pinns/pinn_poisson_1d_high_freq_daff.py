@@ -203,6 +203,9 @@ def update(opt_state, params):
 # 4. LOOP PRINCIPAL DE TREINAMENTO E MEDIÇÃO
 # ==========================================
 architectures = [
+    [264, 264, 1],
+    [264, 264, 264, 1],
+    [512, 512, 1],
     [512, 512, 512, 1]
 ]
 

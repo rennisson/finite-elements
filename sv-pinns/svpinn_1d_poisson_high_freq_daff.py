@@ -41,6 +41,9 @@ activation_function = jax.nn.tanh
 a = 1
 
 architectures = [
+    [264, 264, 1],
+    [264, 264, 264, 1],
+    [512, 512, 1],
     [512, 512, 512, 1]
 ]
 

@@ -58,14 +58,14 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 activation_function = jax.nn.tanh
 
 # Parâmetro de frequência da EDP (Eq. 6.4): a in {1, 10, 25, 50, 75}
-a = 1
+a = 75
 
 K_TEST_FUNCTIONS = 12
 Q_QUADRATURE = 60
 N_G_BOUNDARY = 250  # pontos de colocacao por aresta (mesmo N_g de pinn_poisson_2d.py)
 NUM_STEPS = 5000
 EVAL_FREQ = 20
-NUM_RUNS = 5
+NUM_RUNS = 3
 HIDDEN_LAYER_CONFIGS = [2, 3]
 
 NEURONS_PER_LAYER = [264, 512]

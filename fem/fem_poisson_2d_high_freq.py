@@ -13,7 +13,7 @@ from pathlib import Path
 from ground_truth_poisson_2d_high_freq import generate_analytical_solution_2d
 
 # Parâmetro de frequência da EDP (Eq. 6.4): a in {1, 10, 25, 50, 75}
-a = 1
+a = 75
 
 
 def f(x, a=a):

@@ -39,19 +39,19 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 activation_function = jax.nn.tanh
 
 # Parâmetro de frequência da EDP (Eq. 6.4): a in {1, 10, 25, 50, 75}
-a = 1
+a = 75
 
 architectures = [
-    [264, 264, 1],
-    [264, 264, 264, 1],
+    # [264, 264, 1],
+    # [264, 264, 264, 1],
     [512, 512, 1],
     [512, 512, 512, 1]
 ]
 
 n_colloc = 128              # pontos de colocação por eixo = grid da DST-I (Table A.8, caso 2D)
-N_test_functions = 10000    # numero de funcoes teste amostradas (Table A.8, caso 2D)
-n_g_boundary = 250          # pontos de contorno por aresta (N_g de pinn_poisson_2d.py)
-num_runs = 5
+N_test_functions = 15000    # numero de funcoes teste amostradas (Table A.8, caso 2D)
+n_g_boundary = 120          # pontos de contorno por aresta (N_g de pinn_poisson_2d.py)
+num_runs = 3
 lbfgs_maxiter = 5000       # SV-PINNs treinadas por L-BFGS
 
 

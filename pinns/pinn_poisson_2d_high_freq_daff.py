@@ -32,7 +32,7 @@ lr = 1e-3
 epochs_adam = 0
 lbfgs_maxiter = 5000
 eval_freq = 20
-num_runs = 5
+num_runs = 3
 main_key = jax.random.PRNGKey(42)
 
 N_f = 2000

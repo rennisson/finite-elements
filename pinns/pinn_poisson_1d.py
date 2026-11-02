@@ -55,15 +55,16 @@ key_x = jax.random.PRNGKey(136)
 # Gera amostras usando Latin Hypercube Sampling no intervalo [0, 1)
 sampler = qmc.LatinHypercube(d=1, seed=136)
 sample = sampler.random(n=n)
-X = jnp.array(sample, dtype=jnp.float32)
+X = jnp.array(sample, dtype=jnp.float64)
 
 learning_rate = 1e-4
+
 b1 = 0.9
 b2 = 0.999
 eps = 1e-08
 eps_root = 0.0
-epochs_adam = 15000
-eval_freq = 10
+epochs_adam = 10000
+eval_freq = 20
 
 # Inicializa o otimizador Adam
 optimizer = optax.adam(learning_rate, b1, b2, eps, eps_root)
@@ -110,7 +111,7 @@ def update(opt_state, params):
     sampler = qmc.LatinHypercube(d=1)
     sample = sampler.random(n=n)
 
-    x = jnp.array(sample, dtype=jnp.float32)
+    x = jnp.array(sample, dtype=jnp.float64)
     
     grads = grad_loss(params, x)
     updates, opt_state = optimizer.update(grads, opt_state)
@@ -122,12 +123,13 @@ def update(opt_state, params):
 # ==========================================
 architectures = [
     # [1, 1], [2, 1],
-    [5, 1], [10, 1], [20, 1], [40, 1],
-    [5, 5, 1], [10, 10, 1], [20, 20, 1], [40, 40, 1],
+    # [5, 1], [10, 1], [20, 1], [40, 1],
+    # [5, 5, 1], [10, 10, 1], 
+    [20, 20, 1], [40, 40, 1],
     [5, 5, 5, 1], [10, 10, 10, 1], [20, 20, 20, 1], [40, 40, 40, 1]
 ]
 
-num_runs = 10 
+num_runs = 5
 main_key = jax.random.PRNGKey(42)
 
 for arch in architectures:
@@ -165,7 +167,7 @@ for arch in architectures:
     def objective_lbfgs(p_flat, x_colloc):
         return loss_function(unflatten_fn(p_flat), x_colloc)
     
-    lbfgs_maxiter = 20000
+    lbfgs_maxiter = 10000
     lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=lbfgs_maxiter, history_size=200, tol=1e-12)
 
     # Captura o erro L2 a cada 10 passos.
@@ -210,8 +212,8 @@ for arch in architectures:
         params = []
         
         for k, lin, lout in zip(layer_keys, width[:-1], width[1:]):
-            W = initializer(k, (lin, lout), jnp.float32)
-            B = initializer(k, (1, lout), jnp.float32)
+            W = initializer(k, (lin, lout), jnp.float64)
+            B = initializer(k, (1, lout), jnp.float64)
             params.append({'W': W, 'B': B})
 
         opt_state = optimizer.init(params)
@@ -232,7 +234,7 @@ for arch in architectures:
 
         # Para calcular a Loss final do Adam, geramos uma amostra
         sampler_eval = qmc.LatinHypercube(d=1)
-        X_eval_adam = jnp.array(sampler_eval.random(n=n), dtype=jnp.float32)
+        X_eval_adam = jnp.array(sampler_eval.random(n=n), dtype=jnp.float64)
         loss_adam = loss_function(params, X_eval_adam).block_until_ready()
         
         t_adam = time.perf_counter() - t_start_adam
@@ -247,7 +249,7 @@ for arch in architectures:
         
         # Gera os pontos para o L-BFGS com SciPy, espelhando o que o autor faz
         sampler_lbfgs = qmc.LatinHypercube(d=1)
-        X_lbfgs = jnp.array(sampler_lbfgs.random(n=n), dtype=jnp.float32)
+        X_lbfgs = jnp.array(sampler_lbfgs.random(n=n), dtype=jnp.float64)
         
         t_start_lbfgs = time.perf_counter()
         params_flat, state, loss_traj_run, err_traj_run = lbfgs_segment_with_trajectory(
@@ -351,7 +353,7 @@ for arch in architectures:
         'loss_per_run_adam': all_adam_loss_trajectories.tolist(),
         'l2_relative_error_mean_adam': all_adam_l2_error_trajectories.mean(axis=0).tolist(),
         'l2_relative_error_std_adam': all_adam_l2_error_trajectories.std(axis=0).tolist(),
-        'steps': list(range(10, lbfgs_maxiter + 1, 10)),
+        'steps': list(range(eval_freq, lbfgs_maxiter + 1, eval_freq)),
         'l2_relative_error_per_run': all_l2_error_trajectories.tolist(),
         'loss_per_run': all_loss_trajectories.tolist(),
         'l2_relative_error_mean': all_l2_error_trajectories.mean(axis=0).tolist(),

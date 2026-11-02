@@ -280,18 +280,18 @@ def compute_lambda(params, x_grid, phi_samples, eps=1e-10):
 # 7. TREINAMENTO DAS SV-PINNs (SOMENTE L-BFGS, SEM ADAM)
 # ==========================================
 architectures = [
-    [1, 1], [2, 1],
     [5, 1], [10, 1], [20, 1], [40, 1],
     [5, 5, 1], [10, 10, 1], [20, 20, 1], [40, 40, 1],
     [5, 5, 5, 1], [10, 10, 10, 1], [20, 20, 20, 1], [40, 40, 40, 1]
 ]
  
-n_colloc = 1024            # pontos de colocação = grid da DST-I (Table A.8, caso 1D)
-N_test_functions = 25000   # numero de funcoes teste amostradas (Table A.8, caso 1D)
-num_runs = 10               # 3 repeticoes, como no protocolo experimental do paper (Sec. 6)
-lbfgs_maxiter = 5000       # SV-PINNs treinadas por L-BFGS por 5,000 passos (Sec. 6)
+n_colloc = 512            # pontos de colocação = grid da DST-I (Table A.8, caso 1D)
+N_test_functions = 15000   # numero de funcoes teste amostradas (Table A.8, caso 1D)
+num_runs = 5               # 3 repeticoes, como no protocolo experimental do paper (Sec. 6)
+lbfgs_maxiter = 20000       # SV-PINNs treinadas por L-BFGS por 5,000 passos (Sec. 6)
 tau = 0.1                  # escala fixa de Phi; o equilibrio dos termos da perda e feito via lambda
- 
+eval_freq = 20
+
 main_key = jax.random.PRNGKey(42)
  
 # grid de colocacao x_c^(i), fixo, identico ao grid usado para amostrar phi (Sec. 4.3.1)
@@ -331,7 +331,7 @@ for arch in architectures:
         Rb = boundary_residual(params)
         L_phi = sv_pinn_norm_squared(R, phi_samples_run)
         L_b = jnp.mean(Rb ** 2)
-        return L_phi + (2 * lam) * L_b
+        return L_phi + lam * L_b
  
     # lambda e' fixado no inicio de cada run (lambda = L_Phi(theta_0) / L_b(theta_0))
     # e mantido constante durante todo o treinamento; o L-BFGS roda uma unica vez
@@ -343,7 +343,6 @@ for arch in architectures:
     def lbfgs_segment_with_trajectory(p_flat, phi_samples_run, lam):
         init_state = lbfgs.init_state(p_flat, phi_samples_run=phi_samples_run, lam=lam)
         
-        eval_freq = 10
         # Reduz o tamanho do scan para iterar sobre blocos de passos
         num_blocks = lbfgs_maxiter // eval_freq
 
@@ -485,7 +484,7 @@ for arch in architectures:
         'n_test_functions': N_test_functions,
         'lbfgs_maxiter': lbfgs_maxiter,
         'num_runs': num_runs,
-        'steps': list(range(10, lbfgs_maxiter + 1, 10)),
+        'steps': list(range(eval_freq, lbfgs_maxiter + 1, eval_freq)),
         'l2_relative_error_per_run': all_l2_error_trajectories.tolist(),
         'loss_per_run': all_loss_trajectories.tolist(),
         'l2_relative_error_mean': all_l2_error_trajectories.mean(axis=0).tolist(),

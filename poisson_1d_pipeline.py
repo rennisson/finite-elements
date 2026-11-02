@@ -21,9 +21,11 @@ def run_script(script_path):
 
 def main():
     scripts_to_run = [
-        "fem/fem_poisson_1d.py",
-        "pinns/pinn_poisson_1d.py",
-        "sv-pinns/svpinn_poisson_1d.py"
+        # "fem/fem_poisson_1d.py",
+        # "pinns/pinn_poisson_1d.py",
+        "sv-pinns/svpinn_1d_poisson.py",
+        #"vpinns/vpinn_1d_poisson.py",
+	#"pinns/pinn_poisson_1d.py"
     ]
     
     print("Iniciando Pipeline de Execução Poisson 1D...")

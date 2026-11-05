@@ -88,6 +88,29 @@ def loss_bc_x1(params, xy): return jnp.mean(jax.vmap(lambda pt: du_dx(pt[0], pt[
 def loss_bc_y0(params, xy): return jnp.mean(jax.vmap(lambda pt: u_net(pt[0], pt[1], params)**2)(xy))
 def loss_bc_y1(params, xy): return jnp.mean(jax.vmap(lambda pt: du_dy(pt[0], pt[1], params)**2)(xy))
 
+
+def compute_boundary_losses(params, xy_x0, xy_x1, xy_y0, xy_y1):
+    """Retorna os resíduos quadráticos médios (MSE) de cada condição de fronteira:
+    x=0 (Neumann), x=1 (Neumann), y=0 (Dirichlet), y=1 (Neumann)."""
+    return (
+        loss_bc_x0(params, xy_x0),
+        loss_bc_x1(params, xy_x1),
+        loss_bc_y0(params, xy_y0),
+        loss_bc_y1(params, xy_y1),
+    )
+
+
+def print_boundary_losses(params, xy_x0, xy_x1, xy_y0, xy_y1):
+    """Perda MSE de cada condicao de fronteira separadamente,
+    para comparacao rapida."""
+    loss_x0, loss_x1, loss_y0, loss_y1 = compute_boundary_losses(params, xy_x0, xy_x1, xy_y0, xy_y1)
+    labels = ["x=0 (Neumann)", "x=1 (Neumann)", "y=0 (Dirichlet)", "y=1 (Neumann)"]
+    losses = [loss_x0, loss_x1, loss_y0, loss_y1]
+    print("  Perda residual por condicao de fronteira:")
+    for label, val in zip(labels, losses):
+        print(f"    {label:<18s}: {float(val):.6e}")
+
+
 @jax.jit
 def loss_function(params, xy_interior, xy_x0, xy_x1, xy_y0, xy_y1):
     return (loss_function_interior(params, xy_interior) +
@@ -148,8 +171,19 @@ for arch in architectures:
 
     all_loss_trajectories = []           # (num_runs, lbfgs_maxiter // eval_freq)
     all_l2_error_trajectories = []       # (num_runs, lbfgs_maxiter // eval_freq)
-    all_adam_loss_trajectories = []      # (num_runs, epochs_adam // eval_freq)
-    all_adam_l2_error_trajectories = []  # (num_runs, epochs_adam // eval_freq)
+    all_interior_mse_trajectories = []   # (num_runs, lbfgs_maxiter // eval_freq)
+    all_bc_x0_trajectories = []          # (num_runs, lbfgs_maxiter // eval_freq)
+    all_bc_x1_trajectories = []          # (num_runs, lbfgs_maxiter // eval_freq)
+    all_bc_y0_trajectories = []          # (num_runs, lbfgs_maxiter // eval_freq)
+    all_bc_y1_trajectories = []          # (num_runs, lbfgs_maxiter // eval_freq)
+
+    all_adam_loss_trajectories = []          # (num_runs, epochs_adam // eval_freq)
+    all_adam_l2_error_trajectories = []      # (num_runs, epochs_adam // eval_freq)
+    all_adam_interior_mse_trajectories = []  # (num_runs, epochs_adam // eval_freq)
+    all_adam_bc_x0_trajectories = []         # (num_runs, epochs_adam // eval_freq)
+    all_adam_bc_x1_trajectories = []         # (num_runs, epochs_adam // eval_freq)
+    all_adam_bc_y0_trajectories = []         # (num_runs, epochs_adam // eval_freq)
+    all_adam_bc_y1_trajectories = []         # (num_runs, epochs_adam // eval_freq)
     
     U_nn_final = None
     params_final_flat = None
@@ -170,7 +204,7 @@ for arch in architectures:
     
     lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=lbfgs_maxiter, history_size=200, tol=1e-12)
 
-    # Captura o erro L2 a cada eval_freq passos de L-BFGS (mesmo padrão do 1D)
+    # Captura o erro L2, MSE do interior e perdas de contorno a cada eval_freq passos de L-BFGS
     @jax.jit
     def lbfgs_segment_with_trajectory(p_flat, xy_interior, xy_x0, xy_x1, xy_y0, xy_y1):
         init_state = lbfgs.init_state(p_flat, xy_interior=xy_interior, xy_x0=xy_x0,
@@ -193,12 +227,20 @@ for arch in architectures:
             u_nn_step = forward(xy_points_gt, params_).flatten()
             l2_err = jnp.linalg.norm(u_nn_step - U_true_flat) / jnp.linalg.norm(U_true_flat)
 
-            return (p_next, state_next), (state_next.value, l2_err)
+            # MSE residual do interior (EDP) e de cada condicao de contorno
+            interior_mse = loss_function_interior(params_, xy_interior)
+            bc_x0, bc_x1, bc_y0, bc_y1 = compute_boundary_losses(params_, xy_x0, xy_x1, xy_y0, xy_y1)
 
-        (p_final, state_final), (loss_traj, err_traj) = jax.lax.scan(
-            block_fn, (p_flat, init_state), xs=None, length=num_blocks)
+            return (p_next, state_next), (
+                state_next.value, l2_err, interior_mse, bc_x0, bc_x1, bc_y0, bc_y1
+            )
 
-        return p_final, state_final, loss_traj, err_traj
+        (p_final, state_final), (
+            loss_traj, err_traj, interior_mse_traj, bc_x0_traj, bc_x1_traj, bc_y0_traj, bc_y1_traj
+        ) = jax.lax.scan(block_fn, (p_flat, init_state), xs=None, length=num_blocks)
+
+        return (p_final, state_final, loss_traj, err_traj,
+                interior_mse_traj, bc_x0_traj, bc_x1_traj, bc_y0_traj, bc_y1_traj)
 
     # --- LOOP DE EXECUÇÕES (RUNS) ---
     for run in range(num_runs):
@@ -217,6 +259,11 @@ for arch in architectures:
 
         adam_loss_traj_run = []
         adam_l2_traj_run = []
+        adam_interior_mse_traj_run = []
+        adam_bc_x0_traj_run = []
+        adam_bc_x1_traj_run = []
+        adam_bc_y0_traj_run = []
+        adam_bc_y1_traj_run = []
 
         # 2. Treinamento Adam
         t_start_adam = time.perf_counter()
@@ -228,8 +275,17 @@ for arch in architectures:
                 u_nn_step = forward(xy_points_gt, params).flatten()
                 l2_err_step = jnp.linalg.norm(u_nn_step - U_true_flat) / jnp.linalg.norm(U_true_flat)
                 loss_step = loss_function(params, xy_int, x0, x1, y0, y1)
+                int_mse_step = loss_function_interior(params, xy_int)
+                bc_x0_step, bc_x1_step, bc_y0_step, bc_y1_step = compute_boundary_losses(
+                    params, x0, x1, y0, y1
+                )
                 adam_loss_traj_run.append(float(loss_step))
                 adam_l2_traj_run.append(float(l2_err_step))
+                adam_interior_mse_traj_run.append(float(int_mse_step))
+                adam_bc_x0_traj_run.append(float(bc_x0_step))
+                adam_bc_x1_traj_run.append(float(bc_x1_step))
+                adam_bc_y0_traj_run.append(float(bc_y0_step))
+                adam_bc_y1_traj_run.append(float(bc_y1_step))
         
         t_adam = time.perf_counter() - t_start_adam
         acc_train_adam += t_adam
@@ -241,6 +297,11 @@ for arch in architectures:
 
         all_adam_loss_trajectories.append(np.asarray(adam_loss_traj_run))
         all_adam_l2_error_trajectories.append(np.asarray(adam_l2_traj_run))
+        all_adam_interior_mse_trajectories.append(np.asarray(adam_interior_mse_traj_run))
+        all_adam_bc_x0_trajectories.append(np.asarray(adam_bc_x0_traj_run))
+        all_adam_bc_x1_trajectories.append(np.asarray(adam_bc_x1_traj_run))
+        all_adam_bc_y0_trajectories.append(np.asarray(adam_bc_y0_traj_run))
+        all_adam_bc_y1_trajectories.append(np.asarray(adam_bc_y1_traj_run))
 
         # 3. Refinamento L-BFGS
         params_flat, _ = jax.flatten_util.ravel_pytree(params)
@@ -248,7 +309,8 @@ for arch in architectures:
         xy_int_lbfgs, x0_lbfgs, x1_lbfgs, y0_lbfgs, y1_lbfgs = generate_lhs_points(N_f, N_g)
         
         t_start_lbfgs = time.perf_counter()
-        params_flat, state, loss_traj_run, err_traj_run = lbfgs_segment_with_trajectory(
+        (params_flat, state, loss_traj_run, err_traj_run, interior_mse_traj_run,
+         bc_x0_traj_run, bc_x1_traj_run, bc_y0_traj_run, bc_y1_traj_run) = lbfgs_segment_with_trajectory(
             params_flat, xy_int_lbfgs, x0_lbfgs, x1_lbfgs, y0_lbfgs, y1_lbfgs
         )
         t_lbfgs = time.perf_counter() - t_start_lbfgs
@@ -256,12 +318,26 @@ for arch in architectures:
         
         params = unflatten_fn(params_flat).copy() 
         loss_lbfgs = loss_function(params, xy_int_lbfgs, x0_lbfgs, x1_lbfgs, y0_lbfgs, y1_lbfgs).block_until_ready()
-        print(f"L-BFGS concluído em {t_lbfgs:.2f}s | Loss: {loss_lbfgs:.8e}")
 
         loss_trajectory_run = np.asarray(loss_traj_run)
         l2_error_trajectory_run = np.asarray(err_traj_run)
+        interior_mse_trajectory_run = np.asarray(interior_mse_traj_run)
+        bc_x0_trajectory_run = np.asarray(bc_x0_traj_run)
+        bc_x1_trajectory_run = np.asarray(bc_x1_traj_run)
+        bc_y0_trajectory_run = np.asarray(bc_y0_traj_run)
+        bc_y1_trajectory_run = np.asarray(bc_y1_traj_run)
+
         all_loss_trajectories.append(loss_trajectory_run)
         all_l2_error_trajectories.append(l2_error_trajectory_run)
+        all_interior_mse_trajectories.append(interior_mse_trajectory_run)
+        all_bc_x0_trajectories.append(bc_x0_trajectory_run)
+        all_bc_x1_trajectories.append(bc_x1_trajectory_run)
+        all_bc_y0_trajectories.append(bc_y0_trajectory_run)
+        all_bc_y1_trajectories.append(bc_y1_trajectory_run)
+
+        print(f"L-BFGS concluído em {t_lbfgs:.2f}s | Loss: {loss_lbfgs:.8e}")
+        print(f"  MSE residual do interior: {float(interior_mse_trajectory_run[-1]):.6e}")
+        print_boundary_losses(params, x0_lbfgs, x1_lbfgs, y0_lbfgs, y1_lbfgs)
 
         # 4. Avaliação e Erro L2
         _ = forward(xy_points_gt, params).block_until_ready()
@@ -330,8 +406,19 @@ for arch in architectures:
 
     all_loss_trajectories = np.stack(all_loss_trajectories, axis=0)
     all_l2_error_trajectories = np.stack(all_l2_error_trajectories, axis=0)
+    all_interior_mse_trajectories = np.stack(all_interior_mse_trajectories, axis=0)
+    all_bc_x0_trajectories = np.stack(all_bc_x0_trajectories, axis=0)
+    all_bc_x1_trajectories = np.stack(all_bc_x1_trajectories, axis=0)
+    all_bc_y0_trajectories = np.stack(all_bc_y0_trajectories, axis=0)
+    all_bc_y1_trajectories = np.stack(all_bc_y1_trajectories, axis=0)
+
     all_adam_loss_trajectories = np.stack(all_adam_loss_trajectories, axis=0)
     all_adam_l2_error_trajectories = np.stack(all_adam_l2_error_trajectories, axis=0)
+    all_adam_interior_mse_trajectories = np.stack(all_adam_interior_mse_trajectories, axis=0)
+    all_adam_bc_x0_trajectories = np.stack(all_adam_bc_x0_trajectories, axis=0)
+    all_adam_bc_x1_trajectories = np.stack(all_adam_bc_x1_trajectories, axis=0)
+    all_adam_bc_y0_trajectories = np.stack(all_adam_bc_y0_trajectories, axis=0)
+    all_adam_bc_y1_trajectories = np.stack(all_adam_bc_y1_trajectories, axis=0)
 
     training_curve = {
         'architecture': width,
@@ -344,11 +431,44 @@ for arch in architectures:
         'loss_per_run_adam': all_adam_loss_trajectories.tolist(),
         'l2_relative_error_mean_adam': all_adam_l2_error_trajectories.mean(axis=0).tolist(),
         'l2_relative_error_std_adam': all_adam_l2_error_trajectories.std(axis=0).tolist(),
+        # Interior e Condições de Contorno no Adam (MSE)
+        'interior_loss_per_run_adam': all_adam_interior_mse_trajectories.tolist(),
+        'interior_loss_mean_adam': all_adam_interior_mse_trajectories.mean(axis=0).tolist(),
+        'interior_loss_std_adam': all_adam_interior_mse_trajectories.std(axis=0).tolist(),
+        'bc_loss_x0_per_run_adam': all_adam_bc_x0_trajectories.tolist(),
+        'bc_loss_x0_mean_adam': all_adam_bc_x0_trajectories.mean(axis=0).tolist(),
+        'bc_loss_x0_std_adam': all_adam_bc_x0_trajectories.std(axis=0).tolist(),
+        'bc_loss_x1_per_run_adam': all_adam_bc_x1_trajectories.tolist(),
+        'bc_loss_x1_mean_adam': all_adam_bc_x1_trajectories.mean(axis=0).tolist(),
+        'bc_loss_x1_std_adam': all_adam_bc_x1_trajectories.std(axis=0).tolist(),
+        'bc_loss_y0_per_run_adam': all_adam_bc_y0_trajectories.tolist(),
+        'bc_loss_y0_mean_adam': all_adam_bc_y0_trajectories.mean(axis=0).tolist(),
+        'bc_loss_y0_std_adam': all_adam_bc_y0_trajectories.std(axis=0).tolist(),
+        'bc_loss_y1_per_run_adam': all_adam_bc_y1_trajectories.tolist(),
+        'bc_loss_y1_mean_adam': all_adam_bc_y1_trajectories.mean(axis=0).tolist(),
+        'bc_loss_y1_std_adam': all_adam_bc_y1_trajectories.std(axis=0).tolist(),
         'steps': list(range(eval_freq, lbfgs_maxiter + 1, eval_freq)),
         'l2_relative_error_per_run': all_l2_error_trajectories.tolist(),
         'loss_per_run': all_loss_trajectories.tolist(),
         'l2_relative_error_mean': all_l2_error_trajectories.mean(axis=0).tolist(),
         'l2_relative_error_std': all_l2_error_trajectories.std(axis=0).tolist(),
+        # Interior (MSE do resíduo da EDP)
+        'interior_loss_per_run': all_interior_mse_trajectories.tolist(),
+        'interior_loss_mean': all_interior_mse_trajectories.mean(axis=0).tolist(),
+        'interior_loss_std': all_interior_mse_trajectories.std(axis=0).tolist(),
+        # Condições de contorno (MSE)
+        'bc_loss_x0_per_run': all_bc_x0_trajectories.tolist(),
+        'bc_loss_x0_mean': all_bc_x0_trajectories.mean(axis=0).tolist(),
+        'bc_loss_x0_std': all_bc_x0_trajectories.std(axis=0).tolist(),
+        'bc_loss_x1_per_run': all_bc_x1_trajectories.tolist(),
+        'bc_loss_x1_mean': all_bc_x1_trajectories.mean(axis=0).tolist(),
+        'bc_loss_x1_std': all_bc_x1_trajectories.std(axis=0).tolist(),
+        'bc_loss_y0_per_run': all_bc_y0_trajectories.tolist(),
+        'bc_loss_y0_mean': all_bc_y0_trajectories.mean(axis=0).tolist(),
+        'bc_loss_y0_std': all_bc_y0_trajectories.std(axis=0).tolist(),
+        'bc_loss_y1_per_run': all_bc_y1_trajectories.tolist(),
+        'bc_loss_y1_mean': all_bc_y1_trajectories.mean(axis=0).tolist(),
+        'bc_loss_y1_std': all_bc_y1_trajectories.std(axis=0).tolist(),
     }
 
     nome_arquivo = output_dir / f'curva_treino_pinn_2d_{arch_str}.json'

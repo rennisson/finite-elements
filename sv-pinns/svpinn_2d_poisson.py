@@ -431,6 +431,7 @@ N_test_functions = 10000    # numero de funcoes teste amostradas (Table A.8, cas
 n_g_boundary = 250          # pontos de contorno por aresta (N_g de pinn_poisson_2d.py)
 num_runs = 3                 # 3 repeticoes, como no protocolo experimental do paper (Sec. 6)
 lbfgs_maxiter = 20000          # SV-PINNs treinadas por L-BFGS por 5,000 passos (Sec. 6)
+eval_freq = 20
 
 main_key = jax.random.PRNGKey(42)
 
@@ -490,7 +491,6 @@ for arch in architectures:
         state = lbfgs.init_state(p_flat, phi_samples_run=phi_samples_run,
                                   xy_x0=xy_x0, xy_x1=xy_x1, xy_y0=xy_y0, xy_y1=xy_y1, lam=lam)
 
-        eval_freq = 100
         num_blocks = lbfgs_maxiter // eval_freq
 
         def block_fn(carry, _):
@@ -665,8 +665,7 @@ for arch in architectures:
         'n_test_functions': N_test_functions,
         'lbfgs_maxiter': lbfgs_maxiter,
         'num_runs': num_runs,
-        # Registrado a cada 100 passos
-        'steps': list(range(100, lbfgs_maxiter + 1, 100)),
+        'steps': list(range(eval_freq, lbfgs_maxiter + 1, eval_freq)),
         'l2_relative_error_per_run': all_l2_error_trajectories.tolist(),
         'loss_per_run': all_loss_trajectories.tolist(),
         'l2_relative_error_mean': all_l2_error_trajectories.mean(axis=0).tolist(),

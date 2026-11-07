@@ -72,7 +72,7 @@ print(f"Ground truth '{gt_path}' carregado (a = {a}) com {X_test.shape[0]} ponto
 # ==========================================
 # 2. DADOS E CONFIGURAÇÕES DE TREINO
 # ==========================================
-n = 256
+n = 1024
 key_x = jax.random.PRNGKey(136)
 
 # Gera amostras usando Latin Hypercube Sampling no intervalo [0, 1)
@@ -258,9 +258,15 @@ for arch in architectures:
     def objective_lbfgs(p_flat, x_colloc):
         return loss_function(unflatten_fn(p_flat), x_colloc)
 
-    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=lbfgs_maxiter, history_size=200, tol=1e-12)
+    lbfgs = jaxopt.LBFGS(
+        fun=objective_lbfgs,
+        maxiter=lbfgs_maxiter,
+        history_size=200,
+        tol=1e-12,
+        linesearch="zoom",
+    )
 
-    # Captura o erro L2, MSE do interior e perdas de contorno a cada 10 passos.
+    # Captura o erro L2, MSE do interior e perdas de contorno a cada eval_freq passos.
     @jax.jit
     def lbfgs_segment_with_trajectory(p_flat, x_colloc):
         init_state = lbfgs.init_state(p_flat, x_colloc=x_colloc)
@@ -271,11 +277,25 @@ for arch in architectures:
         def block_fn(carry, _):
             p, state = carry
 
-            # Loop interno: executa 10 iteracoes apenas atualizando os pesos (sem inferencia)
+            # Loop interno: executa eval_freq iteracoes apenas atualizando os pesos (sem inferencia)
             def inner_step(i, val):
                 p_in, state_in = val
                 p_out, state_out = lbfgs.update(p_in, state_in, x_colloc=x_colloc)
-                return p_out, state_out
+                # Guarda contra falha de busca em linha ou explosao numerica apos convergencia
+                valid = (
+                    jnp.isfinite(state_out.value)
+                    & jnp.all(jnp.isfinite(p_out))
+                    & (state_out.value <= state_in.value * 10.0)
+                )
+                p_next_step = jnp.where(valid, p_out, p_in)
+                state_next_step = jax.tree_util.tree_map(
+                    lambda out_leaf, in_leaf: jnp.where(valid, out_leaf, in_leaf)
+                    if isinstance(out_leaf, jax.Array)
+                    else out_leaf,
+                    state_out,
+                    state_in,
+                )
+                return p_next_step, state_next_step
 
             p_next, state_next = jax.lax.fori_loop(0, eval_freq, inner_step, (p, state))
 

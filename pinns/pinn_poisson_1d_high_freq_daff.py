@@ -72,7 +72,7 @@ print(f"Ground truth '{gt_path}' carregado (a = {a}) com {X_test.shape[0]} ponto
 # ==========================================
 # 2. DADOS E CONFIGURAÇÕES DE TREINO
 # ==========================================
-n = 1024
+n = 256
 key_x = jax.random.PRNGKey(136)
 
 # Gera amostras usando Latin Hypercube Sampling no intervalo [0, 1)
@@ -122,15 +122,18 @@ def daff_encoding(x, n_daff=n_daff):
 
 @jax.jit
 def forward(x, params):
-    # Sec. 4.1.1 do artigo (DAFF com contorno de Dirichlet homogêneo):
-    # os vieses (biases) são fixados em zero. Como phi_k(0) = phi_k(1) = 0 e
-    # tanh(0) = 0, todas as camadas mapeiam 0 -> 0 e u_theta(0) = u_theta(1) = 0
-    # é satisfeito de forma exata (hard constraint), sem parâmetros redundantes.
     x = daff_encoding(x, n_daff=n_daff)
     *hidden, output = params
     for layer in hidden:
-        x = activation_function(x @ layer['W'])
-    return x @ output['W']
+        x = activation_function(x @ layer['W'] + layer['B'])
+    return x @ output['W'] + output['B']
+
+
+@jax.jit
+def forward_eval(x, params):
+    """Avalia a rede após o treino subtraindo o deslocamento de contorno N(0),
+    garantindo u(0) = u(1) = 0 sem alterar o treinamento L-BFGS."""
+    return forward(x, params) - forward(jnp.zeros((1, 1), dtype=x.dtype), params)
 
 
 def laplacian(f, argnum=0):
@@ -181,9 +184,10 @@ def print_boundary_losses(params):
 
 @jax.jit
 def loss_function(params, x):
-    # Com DAFF e vieses fixados em zero (hard constraint, Sec. 4.1.1 e 4.2),
-    # u_theta(0) = u_theta(1) = 0 já é satisfeito pela arquitetura (lambda = 0).
-    return loss_interior(x, params)
+    pde_loss = loss_interior(x, params)
+    # Condições de contorno homogêneas: u(0) = u(1) = 0 (Eq. 6.3)
+    bc_0, bc_1 = compute_boundary_losses(params)
+    return pde_loss + bc_0 + bc_1
 
 
 grad_loss = jax.jit(jax.grad(loss_function, 0))
@@ -250,7 +254,7 @@ for arch in architectures:
     dummy_key = jax.random.split(main_key, len(layer_dims) - 1)
     dummy_params = []
     for k, lin, lout in zip(dummy_key, layer_dims[:-1], layer_dims[1:]):
-        dummy_params.append({'W': jnp.zeros((lin, lout))})
+        dummy_params.append({'W': jnp.zeros((lin, lout)), 'B': jnp.zeros((1, lout))})
 
     _, unflatten_fn = jax.flatten_util.ravel_pytree(dummy_params)
 
@@ -258,15 +262,9 @@ for arch in architectures:
     def objective_lbfgs(p_flat, x_colloc):
         return loss_function(unflatten_fn(p_flat), x_colloc)
 
-    lbfgs = jaxopt.LBFGS(
-        fun=objective_lbfgs,
-        maxiter=lbfgs_maxiter,
-        history_size=200,
-        tol=1e-12,
-        linesearch="zoom",
-    )
+    lbfgs = jaxopt.LBFGS(fun=objective_lbfgs, maxiter=lbfgs_maxiter, history_size=200, tol=1e-12)
 
-    # Captura o erro L2, MSE do interior e perdas de contorno a cada eval_freq passos.
+    # Captura o erro L2, MSE do interior e perdas de contorno a cada 10 passos.
     @jax.jit
     def lbfgs_segment_with_trajectory(p_flat, x_colloc):
         init_state = lbfgs.init_state(p_flat, x_colloc=x_colloc)
@@ -277,31 +275,17 @@ for arch in architectures:
         def block_fn(carry, _):
             p, state = carry
 
-            # Loop interno: executa eval_freq iteracoes apenas atualizando os pesos (sem inferencia)
+            # Loop interno: executa 10 iteracoes apenas atualizando os pesos (sem inferencia)
             def inner_step(i, val):
                 p_in, state_in = val
                 p_out, state_out = lbfgs.update(p_in, state_in, x_colloc=x_colloc)
-                # Guarda contra falha de busca em linha ou explosao numerica apos convergencia
-                valid = (
-                    jnp.isfinite(state_out.value)
-                    & jnp.all(jnp.isfinite(p_out))
-                    & (state_out.value <= state_in.value * 10.0)
-                )
-                p_next_step = jnp.where(valid, p_out, p_in)
-                state_next_step = jax.tree_util.tree_map(
-                    lambda out_leaf, in_leaf: jnp.where(valid, out_leaf, in_leaf)
-                    if isinstance(out_leaf, jax.Array)
-                    else out_leaf,
-                    state_out,
-                    state_in,
-                )
-                return p_next_step, state_next_step
+                return p_out, state_out
 
             p_next, state_next = jax.lax.fori_loop(0, eval_freq, inner_step, (p, state))
 
             # Avaliacao: ocorre apenas 1x ao final do bloco de 10 passos
             params_ = unflatten_fn(p_next)
-            Y_nn_step = forward(X_test, params_)
+            Y_nn_step = forward_eval(X_test, params_)
             l2_err = jnp.linalg.norm(Y_nn_step - Y_test) / jnp.linalg.norm(Y_test)
 
             # MSE residual do interior (EDP) e de cada condicao de contorno
@@ -327,7 +311,8 @@ for arch in architectures:
 
         for k, lin, lout in zip(layer_keys, layer_dims[:-1], layer_dims[1:]):
             W = initializer(k, (lin, lout), jnp.float64)
-            params.append({'W': W})
+            B = initializer(k, (1, lout), jnp.float64)
+            params.append({'W': W, 'B': B})
 
         opt_state = optimizer.init(params)
 
@@ -342,7 +327,7 @@ for arch in architectures:
             opt_state, params = update(opt_state, params)
 
             if (e + 1) % eval_freq == 0:
-                Y_nn_step = forward(X_test, params)
+                Y_nn_step = forward_eval(X_test, params)
                 l2_err_step = jnp.linalg.norm(Y_nn_step - Y_test) / jnp.linalg.norm(Y_test)
                 interior_mse_step = loss_interior(X, params)
                 bc_x0_step, bc_x1_step = compute_boundary_losses(params)
@@ -402,9 +387,9 @@ for arch in architectures:
         print(f"  MSE residual do interior: {float(run_interior_mse_traj[-1]):.6e}")
         print_boundary_losses(params)
 
-        # 4. Avaliação nos pontos Ground Truth
+        # 4. Avaliação nos pontos Ground Truth (transladando N(0) após o treino)
         t_start_eval = time.perf_counter()
-        Y_nn = forward(X_test, params).reshape(X_test.shape)
+        Y_nn = forward_eval(X_test, params).reshape(X_test.shape)
         Y_nn.block_until_ready()
         t_eval = time.perf_counter() - t_start_eval
         acc_eval_time += t_eval

@@ -72,7 +72,7 @@ print(f"Ground truth '{gt_path}' carregado (a = {a}) com {X_test.shape[0]} ponto
 # ==========================================
 # 2. DADOS E CONFIGURAÇÕES DE TREINO
 # ==========================================
-n = 1024
+n = 256
 key_x = jax.random.PRNGKey(136)
 
 # Gera amostras usando Latin Hypercube Sampling no intervalo [0, 1)
@@ -120,21 +120,17 @@ def daff_encoding(x, n_daff=n_daff):
     return jnp.sqrt(2.0) * jnp.sin(jnp.pi * k * x)
 
 
-def _mlp(z, params):
-    *hidden, output = params
-    for layer in hidden:
-        z = activation_function(z @ layer['W'] + layer['B'])
-    return z @ output['W'] + output['B']
-
-
 @jax.jit
 def forward(x, params):
-    # Como phi(0) = phi(1) = 0, a rede recebe o vetor nulo nas duas fronteiras.
-    # Subtrair N(0) impõe exatamente u(0) = u(1) = 0 (Eq. 6.3), eliminando a
-    # constante livre que a perda da EDP (só u_xx) não consegue determinar.
-    feats = daff_encoding(x, n_daff=n_daff)
-    zero = jnp.zeros((1, n_daff), dtype=feats.dtype)
-    return _mlp(feats, params) - _mlp(zero, params)
+    # Sec. 4.1.1 do artigo (DAFF com contorno de Dirichlet homogêneo):
+    # os vieses (biases) são fixados em zero. Como phi_k(0) = phi_k(1) = 0 e
+    # tanh(0) = 0, todas as camadas mapeiam 0 -> 0 e u_theta(0) = u_theta(1) = 0
+    # é satisfeito de forma exata (hard constraint), sem parâmetros redundantes.
+    x = daff_encoding(x, n_daff=n_daff)
+    *hidden, output = params
+    for layer in hidden:
+        x = activation_function(x @ layer['W'])
+    return x @ output['W']
 
 
 def laplacian(f, argnum=0):
@@ -185,10 +181,9 @@ def print_boundary_losses(params):
 
 @jax.jit
 def loss_function(params, x):
-    pde_loss = loss_interior(x, params)
-    # Condições de contorno homogêneas: u(0) = u(1) = 0 (Eq. 6.3)
-    bc_0, bc_1 = compute_boundary_losses(params)
-    return pde_loss + bc_0 + bc_1
+    # Com DAFF e vieses fixados em zero (hard constraint, Sec. 4.1.1 e 4.2),
+    # u_theta(0) = u_theta(1) = 0 já é satisfeito pela arquitetura (lambda = 0).
+    return loss_interior(x, params)
 
 
 grad_loss = jax.jit(jax.grad(loss_function, 0))
@@ -255,7 +250,7 @@ for arch in architectures:
     dummy_key = jax.random.split(main_key, len(layer_dims) - 1)
     dummy_params = []
     for k, lin, lout in zip(dummy_key, layer_dims[:-1], layer_dims[1:]):
-        dummy_params.append({'W': jnp.zeros((lin, lout)), 'B': jnp.zeros((1, lout))})
+        dummy_params.append({'W': jnp.zeros((lin, lout))})
 
     _, unflatten_fn = jax.flatten_util.ravel_pytree(dummy_params)
 
@@ -312,8 +307,7 @@ for arch in architectures:
 
         for k, lin, lout in zip(layer_keys, layer_dims[:-1], layer_dims[1:]):
             W = initializer(k, (lin, lout), jnp.float64)
-            B = initializer(k, (1, lout), jnp.float64)
-            params.append({'W': W, 'B': B})
+            params.append({'W': W})
 
         opt_state = optimizer.init(params)
 

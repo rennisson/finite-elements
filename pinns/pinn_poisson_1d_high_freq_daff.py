@@ -72,7 +72,7 @@ print(f"Ground truth '{gt_path}' carregado (a = {a}) com {X_test.shape[0]} ponto
 # ==========================================
 # 2. DADOS E CONFIGURAÇÕES DE TREINO
 # ==========================================
-n = 256
+n = 1024
 key_x = jax.random.PRNGKey(136)
 
 # Gera amostras usando Latin Hypercube Sampling no intervalo [0, 1)
@@ -120,13 +120,21 @@ def daff_encoding(x, n_daff=n_daff):
     return jnp.sqrt(2.0) * jnp.sin(jnp.pi * k * x)
 
 
-@jax.jit
-def forward(x, params):
-    x = daff_encoding(x, n_daff=n_daff)
+def _mlp(z, params):
     *hidden, output = params
     for layer in hidden:
-        x = activation_function(x @ layer['W'] + layer['B'])
-    return x @ output['W'] + output['B']
+        z = activation_function(z @ layer['W'] + layer['B'])
+    return z @ output['W'] + output['B']
+
+
+@jax.jit
+def forward(x, params):
+    # Como phi(0) = phi(1) = 0, a rede recebe o vetor nulo nas duas fronteiras.
+    # Subtrair N(0) impõe exatamente u(0) = u(1) = 0 (Eq. 6.3), eliminando a
+    # constante livre que a perda da EDP (só u_xx) não consegue determinar.
+    feats = daff_encoding(x, n_daff=n_daff)
+    zero = jnp.zeros((1, n_daff), dtype=feats.dtype)
+    return _mlp(feats, params) - _mlp(zero, params)
 
 
 def laplacian(f, argnum=0):
